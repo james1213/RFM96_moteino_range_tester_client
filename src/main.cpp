@@ -98,40 +98,6 @@ void loop() {
     delay(1000);
 }
 
-void sendLoop() {
-// check if the previous transmission finished
-    if (transmissionFinished) {
-        if (!transmissionClenedUp) {
-            transmissionClenedUp = true;
-
-            if (transmissionState == RADIOLIB_ERR_NONE) {
-                // packet was successfully sent
-                Serial.println(F("transmission finished!"));
-
-                // NOTE: when using interrupt-driven transmit method,
-                //       it is not possible to automatically measure
-                //       transmission data rate using getDataRate()
-
-            } else {
-                Serial.print(F("failed, code "));
-                Serial.println(transmissionState);
-
-            }
-
-            // clean up after transmission is finished
-            // this will ensure transmitter is disabled,
-            // RF switch is powered down etc.
-            radio.finishTransmit();
-        } else if (!sendBuffer.equals("")) {
-            Serial.print(F("[RFM96] Sending another packet ... "));
-            transmissionFinished = false;
-            transmissionClenedUp = false;
-            send(sendBuffer, NODE_ID_TO_SEND);
-            sendBuffer = "";
-        }
-    }
-}
-
 void setupRadio() {// initialize SX1278 with default settings
     Serial.print(F("[RFM96] Initializing ... "));
 
@@ -183,6 +149,40 @@ void setupRadio() {// initialize SX1278 with default settings
 void bufferedSend(String &str) {
     sendBuffer = str;
     sendLoop();
+}
+
+void sendLoop() {
+// check if the previous transmission finished
+    if (transmissionFinished) {
+        if (!transmissionClenedUp) {
+            transmissionClenedUp = true;
+
+            if (transmissionState == RADIOLIB_ERR_NONE) {
+                // packet was successfully sent
+                Serial.println(F("transmission finished!"));
+
+                // NOTE: when using interrupt-driven transmit method,
+                //       it is not possible to automatically measure
+                //       transmission data rate using getDataRate()
+
+            } else {
+                Serial.print(F("failed, code "));
+                Serial.println(transmissionState);
+
+            }
+
+            // clean up after transmission is finished
+            // this will ensure transmitter is disabled,
+            // RF switch is powered down etc.
+            radio.finishTransmit();
+        } else if (!sendBuffer.equals("")) {
+            Serial.print(F("[RFM96] Sending another packet ... "));
+            transmissionFinished = false;
+            transmissionClenedUp = false;
+            send(sendBuffer, NODE_ID_TO_SEND);
+            sendBuffer = "";
+        }
+    }
 }
 
 void send(String &str, uint8_t address) {
