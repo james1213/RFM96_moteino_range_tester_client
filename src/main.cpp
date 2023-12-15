@@ -50,22 +50,48 @@ String sendBuffer = "";
 unsigned long sendingTime = 0;
 
 
-void setInterruptionFlag(void);
+void setInterruptionFlag();
+
 void send(String &str, uint8_t address);
+
 void bufferedSend(String &str);
+
+void bufferedSendAndWaitForAck(String &str, void (*_ackReceivedCallback)(),
+                               void (*_ackNotReceivedCallback)(String &payload));
 
 void setupRadio();
 
 void sendLoop();
 
 String readReceivedData();
+
 void startListening();
 
 void receiveLoop();
 
 void dataReceived(const String &str);
 
-//void waitForAckLoop();
+void waitForAckTimeoutLoop();
+
+void sendLoop_previousAckWaiting();
+void bufferedSendAndWaitForAckWithWaitingUntilPreviousAckIsReceived(String &str, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload));
+
+// flag to indicate that a packet was sent
+volatile bool transmissionFinished = true;
+volatile bool transmissionClenedUp = true;
+volatile bool receivedFlag = false;
+volatile bool ackReceived = false;
+bool waitingForAck = false;
+unsigned long waitForAckStartTime = 0;
+unsigned long ackTimeout = 1000; //ms
+
+String ackCallback_paylod = "";
+//String ackCallback_paylod_previousAckWaiting = "";
+void (*ackNotReceivedCallback)(String &payload);
+void (*ackReceivedCallback)();
+//void (*ackNotReceivedCallback_previousAckWaiting)(String &payload);
+//void (*ackReceivedCallback_previousAckWaiting)();
+
 
 void setup() {
     Serial.begin(115200);
@@ -79,15 +105,6 @@ void setup() {
 //    bufferedSend(helloString);
 }
 
-// flag to indicate that a packet was sent
-volatile bool transmissionFinished = true;
-volatile bool transmissionClenedUp = true;
-volatile bool receivedFlag = false;
-volatile bool ackReceived = false;
-//bool waitingForAck = false;
-//unsigned long waitForAckStartTime = 0;
-//unsigned long ackTimeout = 3000; //ms
-
 // this function is called when a complete packet
 // is transmitted by the module
 // IMPORTANT: this function MUST be 'void' type
@@ -95,7 +112,8 @@ volatile bool ackReceived = false;
 #if defined(ESP8266) || defined(ESP32)
 ICACHE_RAM_ATTR
 #endif
-void setInterruptionFlag(void) {
+
+void setInterruptionFlag() {
     if (!transmissionFinished) {
         Serial.println("SENDING TIME = " + String(micros() - sendingTime) + " us");
         // we sent a packet, set the flag
@@ -111,15 +129,41 @@ int count = 0;
 
 void loop() {
     sendLoop();
+    sendLoop_previousAckWaiting();
 
-    if (millis() % 1000 == 0) {
+    if (millis() % 2000 == 0) {
         Serial.println();
-        String str = "Hello World [#" + String(count++) + "]";
-        bufferedSend(str);
+//        String str = "Hello World [#" + String(count++) + "] without ACK";
+//        bufferedSend(str);
+
+        String str = "Hello World [#" + String(count++) + "] with ACK";
+        bufferedSendAndWaitForAck(str,
+//        bufferedSendAndWaitForAckWithWaitingUntilPreviousAckIsReceived(str,
+                                  []() {
+                                      Serial.println(F("OK"));
+                                  },
+                                  [](String &payload) {
+                                      Serial.print(F("NOT OK, payload = "));
+                                      Serial.println(payload);
+                                  });
     }
     receiveLoop();
+    waitForAckTimeoutLoop();
 
 //    delay(1000);
+}
+
+void waitForAckTimeoutLoop() {
+    if (waitingForAck && !ackReceived) {
+        if (millis() - waitForAckStartTime >= ackTimeout) {
+            waitingForAck = false;
+            Serial.println(F("ACK NOT RECEIVED - TIMEOUT"));
+            if (ackNotReceivedCallback) {
+                ackNotReceivedCallback(ackCallback_paylod);
+            }
+        }
+    }
+
 }
 
 void receiveLoop() {// check if the flag is set
@@ -128,10 +172,15 @@ void receiveLoop() {// check if the flag is set
         receivedFlag = false;
         String str = readReceivedData();
         startListening();
-        if (str.equals("!")) {
+//        if (str.equals("!")) {
+        if (str.equals("!") && waitingForAck) { //TODO powinno byc jeszce sprawdzanie messageID isAckPayload(str)
             Serial.println(F("Received ACK"));
             Serial.println("RECEIVED ACK TIME = " + String(micros() - sendingTime) + " us");
             ackReceived = true;
+            waitingForAck = false;
+            if (ackReceivedCallback) {
+                ackReceivedCallback();
+            }
         } else {
             dataReceived(str);
             //TODO wysłanie ack
@@ -149,11 +198,13 @@ void setupRadio() {// initialize SX1278 with default settings
     int state = radio.beginFSK();
     if (state == RADIOLIB_ERR_NONE) {
         Serial.println(F("success!"));
-        Serial.print(F("Chip version: ")); Serial.println(radio.getChipVersion());
+        Serial.print(F("Chip version: "));
+        Serial.println(radio.getChipVersion());
     } else {
         Serial.print(F("failed, code "));
         Serial.println(state);
-        Serial.print(F("Chip version: ")); Serial.println(radio.getChipVersion());
+        Serial.print(F("Chip version: "));
+        Serial.println(radio.getChipVersion());
         while (true);
     }
 
@@ -194,6 +245,36 @@ void setupRadio() {// initialize SX1278 with default settings
     }
 }
 
+//void sendLoop_previousAckWaiting() {
+//    if (!waitingForAck) {
+//        if (!ackCallback_paylod_previousAckWaiting.equals("")) {
+//            bufferedSendAndWaitForAck(ackCallback_paylod_previousAckWaiting, ackReceivedCallback_previousAckWaiting, ackNotReceivedCallback_previousAckWaiting);
+//            ackCallback_paylod_previousAckWaiting = "";
+//        }
+//    }
+//}
+
+//void bufferedSendAndWaitForAckWithWaitingUntilPreviousAckIsReceived(String &str, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
+//    if (waitingForAck) {
+//        ackReceivedCallback_previousAckWaiting = _ackReceivedCallback;
+//        ackNotReceivedCallback_previousAckWaiting = _ackNotReceivedCallback;
+//        ackCallback_paylod_previousAckWaiting = str;
+//    } else {
+//        bufferedSendAndWaitForAck(str, _ackReceivedCallback, _ackNotReceivedCallback);
+//    }
+//}
+
+void bufferedSendAndWaitForAck(String &str, void (*_ackReceivedCallback)(),
+                               void (*_ackNotReceivedCallback)(String &payload)) {
+    ackReceivedCallback = _ackReceivedCallback;
+    ackNotReceivedCallback = _ackNotReceivedCallback;
+    ackCallback_paylod = str;
+    waitingForAck = true;
+    ackReceived = false;
+    waitForAckStartTime = millis();
+    bufferedSend(str);
+}
+
 void bufferedSend(String &str) {
     sendBuffer = str;
     sendLoop();
@@ -226,11 +307,11 @@ void sendLoop() {
             startListening();
         } else if (!sendBuffer.equals("")) {
 //            if (ackReceived) {
-                Serial.print(F("[RFM96] Sending another packet ... "));
-                transmissionFinished = false;
-                transmissionClenedUp = false;
-                send(sendBuffer, NODE_ID_TO_SEND);
-                sendBuffer = "";
+            Serial.print(F("[RFM96] Sending another packet ... "));
+            transmissionFinished = false;
+            transmissionClenedUp = false;
+            send(sendBuffer, NODE_ID_TO_SEND);
+            sendBuffer = "";
 //            } else {
 //                Serial.println("Can not send next data until ACK from previous data is received");
 //            }
