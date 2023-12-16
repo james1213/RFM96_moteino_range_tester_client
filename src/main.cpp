@@ -21,8 +21,8 @@
 // include the library
 #include <Arduino.h>
 #include <RadioLib.h>
-#include "SSD1306Ascii.h"
-#include "SSD1306AsciiWire.h"
+//#include "SSD1306Ascii.h"
+//#include "SSD1306AsciiWire.h"
 
 
 #define NODE_ID 0x01
@@ -108,29 +108,19 @@ void setup() {
     Serial.begin(115200);
     setupRadio();
     startListening();
-
-    // start transmitting the first packet
-//    Serial.print(F("[RFM96] Sending first packet ... "));
-
-//    String helloString = "Hello World";
-//    bufferedSend(helloString);
 }
 
-// this function is called when a complete packet
-// is transmitted by the module
-// IMPORTANT: this function MUST be 'void' type
-//            and MUST NOT have any arguments!
 #if defined(ESP8266) || defined(ESP32)
 ICACHE_RAM_ATTR
 #endif
 
 void setInterruptionFlag() {
     if (!transmissionFinished) {
-        Serial.println("SENDING TIME = " + String(micros() - sendingTime) + " us");
-        // we sent a packet, set the flag
+        Serial.print(F("SENDING TIME = "));
+        Serial.print(String(micros() - sendingTime));
+        Serial.println(F(" us"));
         transmissionFinished = true;
     } else {
-        // we got a packet, set the flag
         receivedFlag = true;
     }
 }
@@ -199,7 +189,10 @@ void receiveLoop() {// check if the flag is set
 //        if (str.equals("!")) {
         if (isAckPayloadAndValidMessageId(str) && waitingForAck) { //TODO powinno byc jeszce sprawdzanie messageID isAckPayloadAndValidMessageId(str)
             Serial.println(F("Received ACK"));
-            Serial.println("RECEIVED ACK TIME = " + String(micros() - sendingTime) + " us");
+//            Serial.println("RECEIVED ACK TIME = " + String(micros() - sendingTime) + " us");
+            Serial.print(F("RECEIVED ACK TIME = "));
+            Serial.print(String(micros() - sendingTime));
+            Serial.println(F(" us"));
             ackReceived = true;
             waitingForAck = false;
             if (ackReceivedCallback) {
@@ -274,7 +267,12 @@ bool isAckPayloadAndValidMessageId(String str) {
     return false;
 }
 
-void dataReceived(const String &str) { Serial.println("Received data: \"" + str + "\""); }
+void dataReceived(const String &str) {
+//    Serial.println("Received data: \"" + str + "\"");
+    Serial.print(F("Received data: \""));
+    Serial.print(str);
+    Serial.println(F("\""));
+}
 
 void setupRadio() {// initialize SX1278 with default settings
     Serial.print(F("[RFM96] Initializing ... "));
@@ -328,25 +326,6 @@ void setupRadio() {// initialize SX1278 with default settings
         while (true);
     }
 }
-
-//void sendLoop_previousAckWaiting() {
-//    if (!waitingForAck) {
-//        if (!ackCallback_paylod_previousAckWaiting.equals("")) {
-//            bufferedSendAndWaitForAck(ackCallback_paylod_previousAckWaiting, ackReceivedCallback_previousAckWaiting, ackNotReceivedCallback_previousAckWaiting);
-//            ackCallback_paylod_previousAckWaiting = "";
-//        }
-//    }
-//}
-
-//void bufferedSendAndWaitForAckWithWaitingUntilPreviousAckIsReceived(String &str, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
-//    if (waitingForAck) {
-//        ackReceivedCallback_previousAckWaiting = _ackReceivedCallback;
-//        ackNotReceivedCallback_previousAckWaiting = _ackNotReceivedCallback;
-//        ackCallback_paylod_previousAckWaiting = str;
-//    } else {
-//        bufferedSendAndWaitForAck(str, _ackReceivedCallback, _ackNotReceivedCallback);
-//    }
-//}
 
 void bufferedSendAndWaitForAck(String &str, uint8_t address, void (*_ackReceivedCallback)(),
                                void (*_ackNotReceivedCallback)(String &payload)) {
@@ -406,13 +385,23 @@ void sendLoop() {
 }
 
 void send(String &str, uint8_t address) {
-    Serial.println("Sending: [" + str + "] to " + address);
+//    Serial.println("Sending: [" + str + "] to " + address);
+    Serial.print(F("Sending: ["));
+    Serial.print(str);
+    Serial.print(F("] to "));
+    Serial.println(address);
     unsigned long startTime = micros();
     str = String(NODE_ID) + "@" + String(messageId) + "@" + str + "`";
-    Serial.println("Transmitting str: [" + str + "]");;
+//    Serial.println("Transmitting str: [" + str + "]");
+    Serial.print(F("Transmitting str: ["));
+    Serial.print(str);
+    Serial.println(F("]"));
     sendingTime = micros();
     transmissionState = radio.startTransmit(str, address);
-    Serial.println("radio.startTransmit() time: " + String(micros() - startTime) + " us");
+//    Serial.println("radio.startTransmit() time: " + String(micros() - startTime) + " us");
+    Serial.print(F("radio.startTransmit() time: "));
+    Serial.print(String(micros() - startTime));
+    Serial.println(F(" us"));
 }
 
 String readReceivedData() {// you can read received data as an Arduino String
