@@ -48,6 +48,8 @@ int transmissionState = RADIOLIB_ERR_NONE;
 String sendBuffer = "";
 uint8_t messageId = 0;
 uint8_t destinationAddress = 0;
+uint8_t senderIdOfLastMessage = 0;
+uint8_t receivedMessageIdOfLastMessage = 0;
 
 unsigned long sendingTime = 0;
 
@@ -97,7 +99,7 @@ void (*ackReceivedCallback)();
 
 bool isAckPayloadAndValidMessageId(String str);
 
-uint8_t extractMessageIdFromReceivedData(String &str);
+void extractMessageIdAndSenderIdFromReceivedData(String &str);
 int splitString(String &text, String *texts, char ch);
 
 bool isAckPayload(String str);
@@ -182,12 +184,14 @@ void receiveLoop() {// check if the flag is set
         String str = readReceivedData();
 
 
-        Serial.print(F("[ACK] | before extractMessageIdFromReceivedData = "));
+        Serial.print(F("[ACK] | before extractMessageIdAndSenderIdFromReceivedData = "));
         Serial.println(str);
-        uint8_t receivedMessageId = extractMessageIdFromReceivedData(str);
-        Serial.print(F("[ACK] | extracted receivedMessageId = "));
-        Serial.println(receivedMessageId);
-        Serial.print(F("[ACK] | after extractMessageIdFromReceivedData = "));
+        extractMessageIdAndSenderIdFromReceivedData(str);
+        Serial.print(F("[ACK] | extracted senderIdOfLastMessage = "));
+        Serial.println(senderIdOfLastMessage);
+        Serial.print(F("[ACK] | extracted receivedMessageIdOfLastMessage = "));
+        Serial.println(receivedMessageIdOfLastMessage);
+        Serial.print(F("[ACK] | after extractMessageIdAndSenderIdFromReceivedData = "));
         Serial.println(str);
 
 
@@ -203,13 +207,13 @@ void receiveLoop() {// check if the flag is set
             }
         } else {
             dataReceived(str);
-            if (receivedMessageId != 0) {
+            if (receivedMessageIdOfLastMessage != 0) {
                 if (!isAckPayload(str)) {
                     Serial.print(F("Sending ACK to address: "));
-                    Serial.println(radio.getSenderId());
+                    Serial.println(senderIdOfLastMessage);
                     String ackString = "!";
-                    ackString.concat(receivedMessageId);
-                    bufferedSend(ackString, radio.getSenderId());
+                    ackString.concat(receivedMessageIdOfLastMessage);
+                    bufferedSend(ackString, senderIdOfLastMessage);
                 }
             } else {
                 Serial.println(F("[ACK] | Can not extract message id from received message"));
@@ -218,14 +222,14 @@ void receiveLoop() {// check if the flag is set
     }
 }
 
-uint8_t extractMessageIdFromReceivedData(String &str) { //TODO od razu powinno usuwać z tego stringa te dane
+void extractMessageIdAndSenderIdFromReceivedData(String &str) { //TODO od razu powinno usuwać z tego stringa te dane
     //TODO czy jak sie tutaj usunię to wszędzie czy tutaj to będzie jednak kopia
     String splittedStr[4];
     int length = splitString(str, splittedStr, '@');
-    if (length == 2) {
-        return (uint8_t) splittedStr[0].toInt();
+    if (length == 3) {
+        senderIdOfLastMessage = (uint8_t) splittedStr[0].toInt();
+        receivedMessageIdOfLastMessage = (uint8_t) splittedStr[1].toInt();
     }
-    return 0;
 }
 
 // Example:
@@ -404,7 +408,7 @@ void sendLoop() {
 void send(String &str, uint8_t address) {
     Serial.println("Sending: [" + str + "] to " + address);
     unsigned long startTime = micros();
-    str = String(messageId) + "@" + str + "`";
+    str = String(NODE_ID) + "@" + String(messageId) + "@" + str + "`";
     Serial.println("Transmitting str: [" + str + "]");;
     sendingTime = micros();
     transmissionState = radio.startTransmit(str, address);
@@ -434,9 +438,9 @@ String readReceivedData() {// you can read received data as an Arduino String
         Serial.print(F("[RFM96] Data:\t\t"));
         Serial.println(str);
 
-        // print senderId
-        Serial.print(F("[RFM96] SendeId:\t\t"));
-        Serial.println(radio.getSenderId());
+//        // print senderIdOfLastMessage
+//        Serial.print(F("[RFM96] SendeId:\t\t"));
+//        Serial.println(radio.getSenderId());
 
         // print RSSI (Received Signal Strength Indicator)
         Serial.print(F("[RFM96] RSSI:\t\t"));
