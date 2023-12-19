@@ -1,0 +1,496 @@
+//FSK
+/*
+  RadioLib SX127x Transmit with Interrupts Example
+
+  This example transmits LoRa packets with one second delays
+  between them. Each packet contains up to 255 bytes
+  of data, in the form of:
+  - Arduino String
+  - null-terminated char array (C-string)
+  - arbitrary binary data (byte array)
+
+  Other modules from SX127x/RFM9x family can also be used.
+
+  For default module settings, see the wiki page
+  https://github.com/jgromes/RadioLib/wiki/Default-configuration#sx127xrfm9x---lora-modem
+
+  For full API reference, see the GitHub Pages
+  https://jgromes.github.io/RadioLib/
+*/
+
+// include the library
+#include <Arduino.h>
+#include <RadioLib.h>
+//#include "SSD1306Ascii.h"
+//#include "SSD1306AsciiWire.h"
+
+
+#define NODE_ID 0x01
+#define NODE_ID_BROADCAST 0xFF
+#define NODE_ID_TO_SEND 0x02
+
+// RF96 has the following connections:
+// CS pin:    10
+// DIO0 pin:  2
+// RESET pin: 3 - ja mam gdzie indziej podłączony
+// TODO - sprawdzić gdzie mam podłączone piny od SPI, czy domyślnie
+RFM96 radio = new Module(10, 2, 3);
+
+
+
+// or using RadioShield
+// https://github.com/jgromes/RadioShield
+//SX1278 radio = RadioShield.ModuleA;
+
+// save transmission state between loops
+int transmissionState = RADIOLIB_ERR_NONE;
+
+String sendBuffer = "";
+uint8_t messageId = 0;
+uint8_t destinationAddress = 0;
+uint8_t destinationIdOfLastMessage = 0;
+uint8_t senderIdOfLastMessage = 0;
+uint8_t receivedMessageIdOfLastMessage = 0;
+
+unsigned long sendingTime = 0;
+
+
+void setInterruptionFlag();
+
+void send(String &str, uint8_t address);
+
+void bufferedSend(String &str, uint8_t destinationAddress);
+
+void bufferedSendAndWaitForAck(String &str, uint8_t destinationAddress, void (*_ackReceivedCallback)(),
+                               void (*_ackNotReceivedCallback)(String &payload));
+
+void setupRadio();
+
+void sendLoop();
+
+String readReceivedData();
+
+void startListening();
+
+void receiveLoop();
+
+void dataReceived(const String &str);
+
+void waitForAckTimeoutLoop();
+
+//void sendLoop_previousAckWaiting();
+//void bufferedSendAndWaitForAckWithWaitingUntilPreviousAckIsReceived(String &str, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload));
+
+// flag to indicate that a packet was sent
+volatile bool transmissionFinished = true;
+volatile bool transmissionClenedUp = true;
+volatile bool receivedFlag = false;
+volatile bool ackReceived = false;
+bool waitingForAck = false;
+unsigned long waitForAckStartTime = 0;
+unsigned long ackTimeout = 1000; //ms
+
+String ackCallback_paylod = "";
+//String ackCallback_paylod_previousAckWaiting = "";
+void (*ackNotReceivedCallback)(String &payload);
+void (*ackReceivedCallback)();
+//void (*ackNotReceivedCallback_previousAckWaiting)(String &payload);
+//void (*ackReceivedCallback_previousAckWaiting)();
+
+
+bool isAckPayloadAndValidMessageId(String str);
+
+void extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(String &str);
+int splitString(String &text, String *texts, char ch);
+
+bool isAckPayload(String str);
+
+void setup() {
+    Serial.begin(115200);
+    setupRadio();
+    startListening();
+}
+
+#if defined(ESP8266) || defined(ESP32)
+ICACHE_RAM_ATTR
+#endif
+
+void setInterruptionFlag() {
+    if (!transmissionFinished) {
+        Serial.print(F("SENDING TIME = "));
+        Serial.print(String(micros() - sendingTime));
+        Serial.println(F(" us"));
+        transmissionFinished = true;
+    } else {
+        receivedFlag = true;
+    }
+}
+
+// counter to keep track of transmitted packets
+int count = 0;
+
+void loop() {
+    sendLoop();
+//    sendLoop_previousAckWaiting();
+
+    if (millis() % 2000 == 0) {
+        Serial.println();
+//        String str = "Hello World [#" + String(count++) + "] without ACK";
+//        bufferedSend(str);
+
+        String str = "Hello World [#" + String(count++) + "] with ACK";
+        bufferedSendAndWaitForAck(str, NODE_ID_TO_SEND,
+//        bufferedSendAndWaitForAckWithWaitingUntilPreviousAckIsReceived(str,
+                                  []() {
+                                      Serial.println(F("OK"));
+                                  },
+                                  [](String &payload) {
+                                      Serial.print(F("NOT OK, payload = "));
+                                      Serial.println(payload);
+                                  });
+    }
+    receiveLoop();
+    waitForAckTimeoutLoop();
+
+//    delay(1000);
+}
+
+void waitForAckTimeoutLoop() {
+    if (waitingForAck && !ackReceived) {
+        if (millis() - waitForAckStartTime >= ackTimeout) {
+            waitingForAck = false;
+            Serial.println(F("ACK NOT RECEIVED - TIMEOUT"));
+            if (ackNotReceivedCallback) {
+                ackNotReceivedCallback(ackCallback_paylod);
+            }
+        }
+    }
+}
+
+void receiveLoop() {// check if the flag is set
+    if (receivedFlag) {
+        // reset flag
+        receivedFlag = false;
+        String str = readReceivedData();
+
+
+        Serial.print(F("[ACK] | before extractMessageIdAndSenderIdAndDestinationIdFromReceivedData = "));
+        Serial.println(str);
+        extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(str);
+        Serial.print(F("[ACK] | extracted senderIdOfLastMessage = "));
+        Serial.println(senderIdOfLastMessage);
+        Serial.print(F("[ACK] | extracted receivedMessageIdOfLastMessage = "));
+        Serial.println(receivedMessageIdOfLastMessage);
+        Serial.print(F("[ACK] | after extractMessageIdAndSenderIdAndDestinationIdFromReceivedData = "));
+        Serial.println(str);
+
+        startListening(); // tutaj chyba nie ma to sendu bo podcas odbioru zawsze słucha
+
+        if (destinationIdOfLastMessage == NODE_ID) {
+            Serial.println(F("This is a destination address"));
+        } else {
+            Serial.println(F("This is not a destination address, ignoring message"));
+            return;
+        }
+
+//        if (str.equals("!")) {
+        if (isAckPayloadAndValidMessageId(str) && waitingForAck) { //TODO powinno byc jeszce sprawdzanie messageID isAckPayloadAndValidMessageId(str)
+            Serial.println(F("Received ACK"));
+//            Serial.println("RECEIVED ACK TIME = " + String(micros() - sendingTime) + " us");
+            Serial.print(F("RECEIVED ACK TIME = "));
+            Serial.print(String(micros() - sendingTime));
+            Serial.println(F(" us"));
+            ackReceived = true;
+            waitingForAck = false;
+            if (ackReceivedCallback) {
+                ackReceivedCallback();
+            }
+        } else {
+            dataReceived(str);
+            if (receivedMessageIdOfLastMessage != 0) {
+                if (!isAckPayload(str)) {
+                    Serial.print(F("Sending ACK to address: "));
+                    Serial.println(senderIdOfLastMessage);
+                    String ackString = "!";
+                    ackString.concat(receivedMessageIdOfLastMessage);
+                    bufferedSend(ackString, senderIdOfLastMessage);
+                }
+            } else {
+                Serial.println(F("[ACK] | Can not extract message id from received message"));
+            }
+        }
+    }
+}
+
+void extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(String &str) { //TODO od razu powinno usuwać z tego stringa te dane
+    //TODO czy jak sie tutaj usunię to wszędzie czy tutaj to będzie jednak kopia
+    String splittedStr[4];
+    int length = splitString(str, splittedStr, '@');
+    if (length == 4) {
+        destinationIdOfLastMessage = (uint8_t) splittedStr[0].toInt();
+        senderIdOfLastMessage = (uint8_t) splittedStr[1].toInt();
+        receivedMessageIdOfLastMessage = (uint8_t) splittedStr[2].toInt();
+    }
+}
+
+// Example:
+// String splittedData[4];
+// int length = splitString(receivedText, splittedData, ',');
+int splitString(String &text, String *texts, char ch) { // Split the string into substrings
+    int stringCount = 0;
+    while (text.length() > 0) {
+        int index = text.indexOf(ch);
+        if (index == -1) { // No space found
+            texts[stringCount++] = text;
+            break;
+        } else {
+            texts[stringCount++] = text.substring(0, index);
+            text = text.substring(index + 1);
+        }
+    }
+    return stringCount;
+}
+
+bool isAckPayload(String str) {
+    Serial.print(F("isAckPayload, str = "));
+    return str.charAt(0) == '!';
+}
+
+bool isAckPayloadAndValidMessageId(String str) {
+    Serial.print(F("isAckPayloadAndValidMessageId, str = "));
+    Serial.println(str);
+    if (str.charAt(0) == '!') {
+        str.remove(0,1);
+        Serial.print(F("isAckPayloadAndValidMessageId, messageId = "));
+        Serial.println(messageId);
+        Serial.print(F("isAckPayloadAndValidMessageId, ((uint8_t) str.toInt()) = "));
+        Serial.println(((uint8_t) str.toInt()));
+
+        if (messageId == ((uint8_t) str.toInt())) {
+            Serial.println(F("isAckPayloadAndValidMessageId, return true"));
+            return true;
+        }
+    }
+    Serial.println(F("isAckPayloadAndValidMessageId, return false"));
+    return false;
+}
+
+void dataReceived(const String &str) {
+//    Serial.println("Received data: \"" + str + "\"");
+    Serial.print(F("Received data: \""));
+    Serial.print(str);
+    Serial.println(F("\""));
+}
+
+
+
+
+
+
+
+
+
+void setupRadio() {// initialize SX1278 with default settings
+    Serial.print(F("[RFM96] Initializing ... "));
+
+//    int state = radio.beginFSK();
+    int state = radio.begin();
+//    radio.setOutputPower(20);
+//    radio.setTxPower(20);
+    if (state == RADIOLIB_ERR_NONE) {
+        Serial.println(F("success!"));
+        Serial.print(F("Chip version: "));
+        Serial.println(radio.getChipVersion());
+    } else {
+        Serial.print(F("failed, code "));
+        Serial.println(state);
+        Serial.print(F("Chip version: "));
+        Serial.println(radio.getChipVersion());
+        while (true);
+    }
+
+    // set the function that will be called when packet transmission is finished
+    // or
+    // set the function that will be called when new packet is received
+    radio.setChannelScanAction(setInterruptionFlag);
+
+
+//    // set node address to 0x02
+//    state = radio.setNodeAddress(NODE_ID);
+//    if (state != RADIOLIB_ERR_NONE) {
+//        Serial.println(F("[RFM96] Unable to set node address, code "));
+//        Serial.println(state);
+//    }
+
+//    // set broadcast address to 0xFF
+//    state = radio.setBroadcastAddress(NODE_ID_BROADCAST);
+//    if (state != RADIOLIB_ERR_NONE) {
+//        Serial.println(F("[RFM96] Unable to set broadcast address, code "));
+//        Serial.println(state);
+//    }
+
+//    uint8_t syncWord[] = {0x01, 0x23, 0x45, 0x67,
+//                          0x89, 0xAB, 0xCD, 0xEF};
+//    state = radio.setSyncWord(syncWord, 8);
+//    if (state != RADIOLIB_ERR_NONE) {
+//        Serial.print(F("Unable to set configuration, code "));
+//        Serial.println(state);
+//        while (true);
+//    }
+//
+//    state = radio.fixedPacketLengthMode(64);
+//    if (state != RADIOLIB_ERR_NONE) {
+//        Serial.print(F("Unable to change fixedPacketLengthMode, code "));
+//        Serial.println(state);
+//        while (true);
+//    }
+
+    Serial.println(F("REGISTERS START"));
+    radio.printRegisters();
+    Serial.println(F("REGISTERS END"));
+}
+
+void bufferedSendAndWaitForAck(String &str, uint8_t address, void (*_ackReceivedCallback)(),
+                               void (*_ackNotReceivedCallback)(String &payload)) {
+    ackReceivedCallback = _ackReceivedCallback;
+    ackNotReceivedCallback = _ackNotReceivedCallback;
+    ackCallback_paylod = str;
+    waitingForAck = true;
+    ackReceived = false;
+    waitForAckStartTime = millis();
+    bufferedSend(str, address);
+}
+
+void bufferedSend(String &str, uint8_t address) {
+    sendBuffer = str;
+    messageId++;
+    destinationAddress = address;
+    sendLoop();
+}
+
+void sendLoop() {
+// check if the previous transmission finished
+    if (transmissionFinished) {
+        if (!transmissionClenedUp) {
+            transmissionClenedUp = true;
+
+            if (transmissionState == RADIOLIB_ERR_NONE) {
+                // packet was successfully sent
+                Serial.println(F("transmission finished!"));
+
+                // NOTE: when using interrupt-driven transmit method,
+                //       it is not possible to automatically measure
+                //       transmission data rate using getDataRate()
+
+            } else {
+                Serial.print(F("failed, code "));
+                Serial.println(transmissionState);
+
+            }
+
+            // clean up after transmission is finished
+            // this will ensure transmitter is disabled,
+            // RF switch is powered down etc.
+            radio.finishTransmit();
+            startListening();
+        } else if (!sendBuffer.equals("")) {
+//            if (ackReceived) {
+            Serial.print(F("[RFM96] Sending another packet ... "));
+            transmissionFinished = false;
+            transmissionClenedUp = false;
+            send(sendBuffer, destinationAddress);
+            sendBuffer = "";
+//            } else {
+//                Serial.println("Can not send next data until ACK from previous data is received");
+//            }
+        }
+    }
+}
+
+void send(String &str, uint8_t address) {
+//    Serial.println("Sending: [" + str + "] to " + address);
+    Serial.print(F("Sending: ["));
+    Serial.print(str);
+    Serial.print(F("] to "));
+    Serial.println(address);
+    unsigned long startTime = micros();
+    str = String(address) + "@" + String(NODE_ID) + "@" + String(messageId) + "@" + str + "`";
+//    Serial.println("Transmitting str: [" + str + "]");
+    Serial.print(F("Transmitting str: ["));
+    Serial.print(str);
+    Serial.println(F("]"));
+    sendingTime = micros();
+//    transmissionState = radio.startTransmit(str, address);
+    transmissionState = radio.startTransmit(str);
+//    Serial.println("radio.startTransmit() time: " + String(micros() - startTime) + " us");
+    Serial.print(F("radio.startTransmit() time: "));
+    Serial.print(String(micros() - startTime));
+    Serial.println(F(" us"));
+}
+
+String readReceivedData() {// you can read received data as an Arduino String
+    String str;
+    int state = radio.readData(str);
+
+//        str.remove(str.lastIndexOf("`"));
+    str.remove(str.indexOf("`"));
+
+    // you can also read received data as byte array
+/*
+  byte byteArr[8];
+  int numBytes = radio.getPacketLength();
+  int state = radio.readData(byteArr, numBytes);
+*/
+
+    if (state == RADIOLIB_ERR_NONE) {
+        // packet was successfully received
+        Serial.println();
+        Serial.println(F("[RFM96] Received packet!"));
+
+        // print data of the packet
+        Serial.print(F("[RFM96] Data:\t\t"));
+        Serial.println(str);
+
+//        // print senderIdOfLastMessage
+//        Serial.print(F("[RFM96] SendeId:\t\t"));
+//        Serial.println(radio.getSenderId());
+
+        // print RSSI (Received Signal Strength Indicator)
+        Serial.print(F("[RFM96] RSSI:\t\t"));
+        Serial.print(radio.getRSSI());
+        Serial.println(F(" dBm"));
+
+        // print SNR (Signal-to-Noise Ratio)
+        Serial.print(F("[RFM96] SNR:\t\t"));
+        Serial.print(radio.getSNR());
+        Serial.println(F(" dB"));
+
+        // print frequency error
+        Serial.print(F("[RFM96] Frequency error:\t"));
+        Serial.print(radio.getFrequencyError());
+        Serial.println(F(" Hz"));
+
+    } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
+        // packet was received, but is malformed
+        str = "";
+        Serial.println(F("[RFM96] CRC error!"));
+    } else {
+        // some other error occurred
+        str = "";
+        Serial.print(F("[RFM96] Failed, code "));
+        Serial.println(state);
+    }
+    return str;
+}
+
+void startListening() {// start listening for LoRa packets
+    Serial.print(F("[RFM96] Starting to listen ... "));
+    int state = radio.startReceive();
+    if (state == RADIOLIB_ERR_NONE) {
+        Serial.println(F("success!"));
+    } else {
+        Serial.print(F("failed, code "));
+        Serial.println(state);
+        while (true);
+    }
+}
