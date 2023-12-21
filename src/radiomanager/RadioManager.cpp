@@ -4,189 +4,260 @@
 
 #include "RadioManager.h"
 
-bool logActive = false;
-volatile bool radioManager_transmissionFinished = true;
-volatile bool radioManager_receivedFlag = false;
-unsigned long radioManager_sendingTime = 0;
-volatile bool transmissionClenedUp = true;
-volatile bool ackReceived = false;
-bool waitingForAck = false;
-unsigned long waitForAckStartTime = 0;
-unsigned long ackTimeout = 1000; //ms
-String ackCallback_paylod = "";
+//uint8_t nodeId = 0;
+//bool logActive = true;
+//volatile bool transmissionFinished = true;
+//volatile bool receivedFlag = false;
+//unsigned long sendingTime = 0;
+//volatile bool transmissionClenedUp = true;
+//volatile bool ackReceived = false;
+//bool waitingForAck = false;
+//unsigned long waitForAckStartTime = 0;
+//unsigned long ackTimeout = 1000; //ms
+//String ackCallback_paylod = "";
+//
+//void (*ackNotReceivedCallback)(String &payload);
+//void (*ackReceivedCallback)();
+//void (*dataReceivedCallback)(String &receivedText, uint8_t senderId);
+//void (*dataSentCallback)();
+//
+//String sendBuffer = "";
+//uint8_t messageId = 0;
+//uint8_t destinationAddress = 0;
+//uint8_t destinationIdOfLastMessage = 0;
+//uint8_t senderIdOfLastMessage = 0;
+//uint8_t receivedMessageIdOfLastMessage = 0;
+//String lastReceivedData;
+//int receivedPacketSize = 0;
+//
+//bool _ackRequested = false;
+//bool needToSendAckToSender = false;
+//bool sendAckAutomaticly = true;
+//volatile bool _haveData;
 
-void (*ackNotReceivedCallback)(String &payload);
-void (*ackReceivedCallback)();
-void (*dataReceivedCallback)(String &receivedText, uint8_t senderId);
-void (*dataSentCallback)();
 
-String sendBuffer = "";
-uint8_t messageId = 0;
-uint8_t destinationAddress = 0;
-uint8_t destinationIdOfLastMessage = 0;
-uint8_t senderIdOfLastMessage = 0;
-uint8_t receivedMessageIdOfLastMessage = 0;
-int receivedPacketSize = 0;
-
-
-void radioManager_setupRadio() {
+void RadioManager::setupRadio(uint8_t _nodeId, void(*onReceiveDoneCallback)(int), void(*onTxDoneCallback)()) {
+    nodeId = _nodeId;
+    LoRa.enableCrc();
     LoRa.setPins(10, 7, 2);
     if (!LoRa.begin(433E6)) {
-        radioManager_logln("LoRa init failed. Check your connections.");
+        DEBUGlogln("LoRa init failed. Check your connections.");
         while (true);                       // if failed, do nothing
     }
 
-    radioManager_logln("LoRa init succeeded.");
-    radioManager_logln();
-    radioManager_logln("LoRa Simple Node");
-    radioManager_logln("Only receive messages from gateways");
-    radioManager_logln("Tx: invertIQ disable");
-    radioManager_logln("Rx: invertIQ enable");
-    radioManager_logln();
+    DEBUGlogln("LoRa init succeeded.");
+    DEBUGlogln();
+    DEBUGlogln("LoRa Simple Node");
+    DEBUGlogln("Only receive messages from gateways");
+    DEBUGlogln("Tx: invertIQ disable");
+    DEBUGlogln("Rx: invertIQ enable");
+    DEBUGlogln();
 
-    LoRa.onReceive(radioManager_onReceiveDone);
-    LoRa.onTxDone(radioManager_onTxDone);
-    radioManager_LoRa_rxMode();
+    LoRa.onReceive(onReceiveDoneCallback);
+    LoRa.onTxDone(onTxDoneCallback);
+    LoRa_rxMode();
 }
 
-void radioManager_onDataReceived(void(*callback)(String &receivedText, uint8_t senderId)) {
+void cStyleWrapper_onReceiveDone(int packetSize) {
+    //TODO
+}
+
+void RadioManager::onDataReceived(void(*callback)(String &receivedText, uint8_t senderId)) {
     dataReceivedCallback = callback;
 }
 
-void radioManager_onDataSent(void(*callback)()) {
+void RadioManager::onDataSent(void(*callback)()) {
     dataSentCallback = callback;
 }
 
-int getReceivedPacketSize() {
+int RadioManager::getReceivedPacketSize() {
     return receivedPacketSize;
 }
 
-void radioManager_radioLoop() {
-    radioManager_sendLoop();
-    radioManager_receiveLoop();
+void RadioManager::setSendAckAutomaticly(bool value) {
+    sendAckAutomaticly = value;
+}
+
+bool RadioManager::isAckReceived() {
+    return ackReceived;
+}
+
+uint8_t RadioManager::getSenderIdOfLastMessage() {
+    return senderIdOfLastMessage;
+}
+
+String RadioManager::getLastReceivedData() {
+    return lastReceivedData;
+}
+
+bool RadioManager::isHaveDate() {
+    return _haveData;
+}
+
+bool RadioManager::setHaveData(bool value) {
+    _haveData = value;
+}
+
+bool RadioManager::isTransmissionFinished() {
+    return transmissionFinished;
+}
+
+bool RadioManager::isNeedToSendAckToSender(){
+    return needToSendAckToSender;
+}
+
+void RadioManager::radioLoop() {
+    sendLoop();
+    receiveLoop();
     waitForAckTimeoutLoop();
 }
 
-void radioManager_sendLoop() {
-    if (radioManager_transmissionFinished) {
+void RadioManager::sendLoop() {
+    if (transmissionFinished) {
         if (!transmissionClenedUp) {
             transmissionClenedUp = true;
-            radioManager_logln(F("transmission finished!"));
+            DEBUGlogln(F("transmission finished!"));
         } else if (!sendBuffer.equals("")) {
-            radioManager_log(F("[RFM96] Sending another packet ... "));
-            radioManager_transmissionFinished = false;
+            DEBUGlog(F("[RFM96] Sending another packet ... "));
+            transmissionFinished = false;
             transmissionClenedUp = false;
-            send(sendBuffer, destinationAddress);
+            startSending(sendBuffer, destinationAddress);
             sendBuffer = "";
         }
     }
 }
 
-void radioManager_receiveLoop() {
-    if (radioManager_receivedFlag) {
-        radioManager_receivedFlag = false;
-        String str = radioManager_readReceivedData();
+void RadioManager::receiveLoop() {
+    if (receivedFlag) {
+        receivedFlag = false;
+        String str = readReceivedData();
 
-        radioManager_log(F("[ACK] | before extractMessageIdAndSenderIdAndDestinationIdFromReceivedData = "));
-        radioManager_logln(str);
-        radioManager_extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(str);
-        radioManager_log(F("[ACK] | extracted senderIdOfLastMessage = "));
-        radioManager_logln(senderIdOfLastMessage);
-        radioManager_log(F("[ACK] | extracted receivedMessageIdOfLastMessage = "));
-        radioManager_logln(receivedMessageIdOfLastMessage);
-        radioManager_log(F("[ACK] | after extractMessageIdAndSenderIdAndDestinationIdFromReceivedData = "));
-        radioManager_logln(str);
+        DEBUGlog(F("[ACK] | before extractMessageIdAndSenderIdAndDestinationIdFromReceivedData = "));
+        DEBUGlogln(str);
+        extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(str);
+        DEBUGlog(F("[ACK] | extracted senderIdOfLastMessage = "));
+        DEBUGlogln(senderIdOfLastMessage);
+        DEBUGlog(F("[ACK] | extracted receivedMessageIdOfLastMessage = "));
+        DEBUGlogln(receivedMessageIdOfLastMessage);
+        DEBUGlog(F("[ACK] | extracted needToSendAckToSender = "));
+        DEBUGlogln(needToSendAckToSender);
+        DEBUGlog(F("[ACK] | after extractMessageIdAndSenderIdAndDestinationIdFromReceivedData = "));
+        DEBUGlogln(str);
 
-        if (destinationIdOfLastMessage == NODE_ID) {
-            radioManager_logln(F("This is a destination address"));
+        if (destinationIdOfLastMessage == nodeId) {
+            DEBUGlogln(F("This is a destination address"));
         } else {
-            radioManager_logln(F("This is not a destination address, ignoring message"));
+            DEBUGlogln(F("This is not a destination address, ignoring message"));
             return;
         }
 
         if (isAckPayloadAndValidMessageId(str) && waitingForAck) {
-            radioManager_logln(F("Received ACK"));
-            radioManager_log(F("RECEIVED ACK TIME = "));
-            radioManager_log(String(micros() - radioManager_sendingTime));
-            radioManager_logln(F(" us"));
+            DEBUGlogln(F("Received ACK"));
+            DEBUGlog(F("RECEIVED ACK TIME = "));
+            DEBUGlog(String(micros() - sendingTime));
+            DEBUGlogln(F(" us"));
             ackReceived = true;
             waitingForAck = false;
             if (ackReceivedCallback) {
                 ackReceivedCallback();
             }
         } else {
-//            dataReceived(str);
+            Serial.println(F("RadioManager | _haveData = true"));
+            _haveData = true;
+            lastReceivedData = str;
             if (dataReceivedCallback) {
                 dataReceivedCallback(str, senderIdOfLastMessage);
             }
             if (receivedMessageIdOfLastMessage != 0) {
-                if (!isAckPayload(str)) {
-                    radioManager_log(F("Sending ACK to address: "));
-                    radioManager_logln(senderIdOfLastMessage);
-                    String ackString = "!";
-                    ackString.concat(receivedMessageIdOfLastMessage);
-                    bufferedSend(ackString, senderIdOfLastMessage);
+                if (!isAckPayload(str) && needToSendAckToSender && sendAckAutomaticly) {
+                    sendAck();
                 }
             } else {
-                radioManager_logln(F("[ACK] | Can not extract message id from received message"));
+                DEBUGlogln(F("[ACK] | Can not extract message id from received message"));
             }
         }
     }
 }
 
-String radioManager_readReceivedData() {
+void RadioManager::sendAck() {
+    DEBUGlog(F("Sending ACK to address: "));
+    DEBUGlogln(senderIdOfLastMessage);
+    String ackString = "!";
+    ackString.concat(receivedMessageIdOfLastMessage);
+    send(ackString, senderIdOfLastMessage);
+}
+
+String RadioManager::readReceivedData() {
     String str = "";
     while (LoRa.available()) {
         str += (char) LoRa.read();
     }
 
-    str.remove(str.indexOf("`"));
+//    DEBUGlog(F("BEFORE remove: "));
+//    DEBUGlogln(str);
+//    str.remove(str.indexOf("`")); //TODO usunięcie tylko ostatniego takiego znaku
 
+    str.remove(str.lastIndexOf("`")); //TODO usunięcie tylko ostatniego takiego znaku
+//    str.remove(str.length() - 1);
+//    DEBUGlog(F("AFTER remove: "));
+//    DEBUGlogln(str);
 
-    radioManager_logln();
-    radioManager_logln(F("[RFM96] Received packet!"));
+    DEBUGlogln();
+    DEBUGlogln(F("[RFM96] Received packet!"));
 
     // print data of the packet
-    radioManager_log(F("[RFM96] Data:\t\t"));
-    radioManager_logln(str);
+    DEBUGlog(F("[RFM96] Data:\t\t"));
+    DEBUGlogln(str);
 
 //        // print senderIdOfLastMessage
-//        radioManager_log(F("[RFM96] SendeId:\t\t"));
-//        radioManager_logln(radio.getSenderId());
+//        DEBUGlog(F("[RFM96] SendeId:\t\t"));
+//        DEBUGlogln(radio.getSenderId());
 
     // print RSSI (Received Signal Strength Indicator)
-    radioManager_log(F("[RFM96] RSSI:\t\t"));
-    radioManager_log(LoRa.packetRssi());
-    radioManager_logln(F(" dBm"));
+    DEBUGlog(F("[RFM96] RSSI:\t\t"));
+    DEBUGlog(LoRa.packetRssi());
+    DEBUGlogln(F(" dBm"));
 
     // print SNR (Signal-to-Noise Ratio)
-    radioManager_log(F("[RFM96] SNR:\t\t"));
-    radioManager_log(LoRa.packetSnr());
-    radioManager_logln(F(" dB"));
+    DEBUGlog(F("[RFM96] SNR:\t\t"));
+    DEBUGlog(LoRa.packetSnr());
+    DEBUGlogln(F(" dB"));
 
     // print frequency error
-    radioManager_log(F("[RFM96] Frequency error:\t"));
-    radioManager_log(LoRa.packetFrequencyError());
-    radioManager_logln(F(" Hz"));
+    DEBUGlog(F("[RFM96] Frequency error:\t"));
+    DEBUGlog(LoRa.packetFrequencyError());
+    DEBUGlogln(F(" Hz"));
 
     return str;
 }
 
-void radioManager_extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(
+//TODO przerobić tę metodę
+void RadioManager::extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(
         String &str) { //TODO od razu powinno usuwać z tego stringa te dane
     //TODO czy jak sie tutaj usunię to wszędzie czy tutaj to będzie jednak kopia
     String splittedStr[4];
-    int length = splitString(str, splittedStr, '@');
+    int length = splitString(str, splittedStr, '@', 4);
     if (length == 4) {
         destinationIdOfLastMessage = (uint8_t) splittedStr[0].toInt();
         senderIdOfLastMessage = (uint8_t) splittedStr[1].toInt();
         receivedMessageIdOfLastMessage = (uint8_t) splittedStr[2].toInt();
+        needToSendAckToSender = (bool) splittedStr[3].toInt();
     }
+//    for (int i = 0; i < length; i++) {
+//        DEBUGlog(F("splittedStr["));
+//        DEBUGlog(i);
+//        DEBUGlog(F("]="));
+//        DEBUGlogln(splittedStr[i]);
+//    }
 }
 
-int splitString(String &text, String *texts, char ch) { // Split the string into substrings
+int RadioManager::splitString(String &text, String *texts, char ch, int maxArrayLength) { // Split the string into substrings
+//    unsigned int arrayLength = texts->length();
+    unsigned int arrayLength = maxArrayLength;
+    int arrayIndex = 0;
     int stringCount = 0;
-    while (text.length() > 0) {
+    while (text.length() > 0 && arrayIndex < arrayLength) {
+        arrayIndex++;
         int index = text.indexOf(ch);
         if (index == -1) { // No space found
             texts[stringCount++] = text;
@@ -199,41 +270,42 @@ int splitString(String &text, String *texts, char ch) { // Split the string into
     return stringCount;
 }
 
-bool isAckPayload(String str) {
-    radioManager_log(F("isAckPayload, str = "));
+bool RadioManager::isAckPayload(String str) {
+    DEBUGlog(F("isAckPayload, str = "));
+    DEBUGlogln(str);
     return str.charAt(0) == '!';
 }
 
-bool isAckPayloadAndValidMessageId(String str) {
-    radioManager_log(F("isAckPayloadAndValidMessageId, str = "));
-    radioManager_logln(str);
+bool RadioManager::isAckPayloadAndValidMessageId(String str) {
+    DEBUGlog(F("isAckPayloadAndValidMessageId, str = "));
+    DEBUGlogln(str);
     if (str.charAt(0) == '!') {
         str.remove(0, 1);
-        radioManager_log(F("isAckPayloadAndValidMessageId, messageId = "));
-        radioManager_logln(messageId);
-        radioManager_log(F("isAckPayloadAndValidMessageId, ((uint8_t) str.toInt()) = "));
-        radioManager_logln(((uint8_t) str.toInt()));
+        DEBUGlog(F("isAckPayloadAndValidMessageId, messageId = "));
+        DEBUGlogln(messageId);
+        DEBUGlog(F("isAckPayloadAndValidMessageId, ((uint8_t) str.toInt()) = "));
+        DEBUGlogln(((uint8_t) str.toInt()));
 
         if (messageId == ((uint8_t) str.toInt())) {
-            radioManager_logln(F("isAckPayloadAndValidMessageId, return true"));
+            DEBUGlogln(F("isAckPayloadAndValidMessageId, return true"));
             return true;
         }
     }
-    radioManager_logln(F("isAckPayloadAndValidMessageId, return false"));
+    DEBUGlogln(F("isAckPayloadAndValidMessageId, return false"));
     return false;
 }
 
-//void dataReceived(const String &str) {
-//    radioManager_log(F("Received data: \""));
-//    radioManager_log(str);
-//    radioManager_logln(F("\""));
+//void RadioManager::dataReceived(const String &str) {
+//    DEBUGlog(F("Received data: \""));
+//    DEBUGlog(str);
+//    DEBUGlogln(F("\""));
 //}
 
-void waitForAckTimeoutLoop() {
+void RadioManager::waitForAckTimeoutLoop() {
     if (waitingForAck && !ackReceived) {
         if (millis() - waitForAckStartTime >= ackTimeout) {
             waitingForAck = false;
-            radioManager_logln(F("ACK NOT RECEIVED - TIMEOUT"));
+            DEBUGlogln(F("ACK NOT RECEIVED - TIMEOUT"));
             if (ackNotReceivedCallback) {
                 ackNotReceivedCallback(ackCallback_paylod);
             }
@@ -241,131 +313,145 @@ void waitForAckTimeoutLoop() {
     }
 }
 
-void bufferedSendAndWaitForAck(String &str, uint8_t address, void (*_ackReceivedCallback)(),
-                               void (*_ackNotReceivedCallback)(String &payload)) {
-    ackReceivedCallback = _ackReceivedCallback;
-    ackNotReceivedCallback = _ackNotReceivedCallback;
-    ackCallback_paylod = str;
-    waitingForAck = true;
-    ackReceived = false;
-    waitForAckStartTime = millis();
-    bufferedSend(str, address);
-}
+//void RadioManager::bufferedSendAndWaitForAck(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
+//    ackReceivedCallback = _ackReceivedCallback;
+//    ackNotReceivedCallback = _ackNotReceivedCallback;
+////    ackCallback_paylod = str;
+////    waitingForAck = true;
+////    ackReceived = false;
+////    waitForAckStartTime = millis();
+//    send(str, address, true);
+//}
 
-void bufferedSend(String &str, uint8_t address) {
+void RadioManager::send(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
+    sendAckAutomaticly = _sendAckAutomaticly;
+    if (ackRequested) {
+        ackReceivedCallback = _ackReceivedCallback;
+        ackNotReceivedCallback = _ackNotReceivedCallback;
+        ackCallback_paylod = str;
+        waitingForAck = true;
+        ackReceived = false;
+        waitForAckStartTime = millis();
+    }
     sendBuffer = str;
     messageId++;
+    if (messageId == 0) messageId = 1;
     destinationAddress = address;
-    radioManager_sendLoop();
+    _ackRequested = ackRequested;
+    sendLoop();
 }
 
-void send(String &str, uint8_t address) {
-    radioManager_log(F("Sending: ["));
-    radioManager_log(str);
-    radioManager_log(F("] to "));
-    radioManager_logln(address);
+void RadioManager::startSending(String &str, uint8_t address) {
+    DEBUGlog(F("Sending: ["));
+    DEBUGlog(str);
+    DEBUGlog(F("] to "));
+    DEBUGlogln(address);
     unsigned long startTime = micros();
-    str = String(address) + "@" + String(NODE_ID) + "@" + String(messageId) + "@" + str + "`";
-    radioManager_log(F("Transmitting str: ["));
-    radioManager_log(str);
-    radioManager_logln(F("]"));
-    radioManager_sendingTime = micros();
+    str = String(address) + "@" + String(nodeId) + "@" + String(messageId) + "@" + (_ackRequested ? "1" : "0") + "@" + str + "`";
+    DEBUGlog(F("Transmitting str: ["));
+    DEBUGlog(str);
+    DEBUGlogln(F("]"));
+    sendingTime = micros();
     LoRa_sendMessage(str);
-    radioManager_log(F("radio.startTransmit() time: "));
-    radioManager_log(String(micros() - startTime));
-    radioManager_logln(F(" us"));
+    DEBUGlog(F("radio.startTransmit() time: "));
+    DEBUGlog(String(micros() - startTime));
+    DEBUGlogln(F(" us"));
 }
 
-void LoRa_sendMessage(String message) {
+void RadioManager::LoRa_sendMessage(String message) {
     LoRa_txMode();                        // set tx mode
     LoRa.beginPacket();                   // start packet
     LoRa.print(message);                  // add payload
-    LoRa.endPacket(true);                 // finish packet and send it
+    LoRa.endPacket(true);                 // finish packet and startSending it
 }
 
-void LoRa_txMode() {
+void RadioManager::LoRa_txMode() {
     LoRa.idle();                          // set standby mode
 //    LoRa.disableInvertIQ();               // node
 }
 
-void radioManager_onReceiveDone(int packetSize) {
+void RadioManager::onReceiveDone(int packetSize) {
     if (packetSize > 0) {
-        radioManager_receivedFlag = true;
+        receivedFlag = true;
         receivedPacketSize = packetSize;
-        radioManager_logln(F("Received interrupt"));
+        DEBUGlogln(F("Received interrupt"));
     } else {
-        radioManager_logln(F("ERROR: Received 0 lenght packet!!!"));
+        DEBUGlogln(F("ERROR: Received 0 lenght packet!!!"));
     }
 }
 
-void radioManager_onTxDone() {
-    radioManager_LoRa_rxMode();
-    radioManager_transmissionFinished = true;
-    radioManager_logln(F("Send interrupt"));
-    radioManager_log(F("SENDING TIME = "));
-    radioManager_log(String(micros() - radioManager_sendingTime));
-    radioManager_logln(F(" us"));
-    radioManager_logln(F("TxDone"));
+void RadioManager::onTxDone() {
+    LoRa_rxMode();
+    transmissionFinished = true;
+    DEBUGlogln(F("Send interrupt"));
+    DEBUGlog(F("SENDING TIME = "));
+    DEBUGlog(String(micros() - sendingTime));
+    DEBUGlogln(F(" us"));
+    DEBUGlogln(F("TxDone"));
 
     if (dataSentCallback) {
         dataSentCallback();
     }
 }
 
-void radioManager_LoRa_rxMode() {
+void RadioManager::LoRa_rxMode() {
 //    LoRa.enableInvertIQ();                // node
     LoRa.receive();                       // set receive mode
 }
 
 
-void radioManager_logln(const __FlashStringHelper *ifsh) {
+void RadioManager::DEBUGlogln(const __FlashStringHelper *ifsh) {
     if (logActive) Serial.println(ifsh);
 }
 
-void radioManager_log(const __FlashStringHelper *ifsh) {
+void RadioManager::DEBUGlog(const __FlashStringHelper *ifsh) {
     if (logActive) Serial.print(ifsh);
 }
 
-void radioManager_logln(const String &s) {
+void RadioManager::DEBUGlogln(const String &s) {
     if (logActive) Serial.println(s);
 }
 
-void radioManager_log(const String &s) {
+void RadioManager::DEBUGlog(const String &s) {
     if (logActive) Serial.print(s);
 }
 
-void radioManager_logln(unsigned char b, int base) {
+void RadioManager::DEBUGlogln(unsigned char b, int base) {
     if (logActive) Serial.println(b, base);
 }
 
-void radioManager_log(unsigned char b, int base) {
+void RadioManager::DEBUGlog(unsigned char b, int base) {
     if (logActive) Serial.print(b, base);
 }
 
-void radioManager_logln() {
+void RadioManager::DEBUGlogln() {
     if (logActive) Serial.println();
 }
 
-void radioManager_logln(int n, int base) {
+void RadioManager::DEBUGlogln(int n, int base) {
     if (logActive) Serial.println(n, base);
 }
 
-void radioManager_log(int n, int base) {
+void RadioManager::DEBUGlog(int n, int base) {
     if (logActive) Serial.print(n, base);
 }
 
-void radioManager_logln(double n, int digits) {
+void RadioManager::DEBUGlogln(double n, int digits) {
     if (logActive) Serial.println(n, digits);
 }
 
-void radioManager_log(double n, int digits) {
+void RadioManager::DEBUGlog(double n, int digits) {
     if (logActive) Serial.print(n, digits);
 }
 
-void radioManager_logln(long n, int base) {
+void RadioManager::DEBUGlogln(long n, int base) {
     if (logActive) Serial.println(n, base);
 }
 
-void radioManager_log(long n, int base) {
+void RadioManager::DEBUGlog(long n, int base) {
     if (logActive) Serial.print(n, base);
+}
+
+void RadioManager::dumpRegisters() {
+    LoRa.dumpRegisters(Serial);
 }
