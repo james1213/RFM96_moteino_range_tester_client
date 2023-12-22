@@ -57,7 +57,7 @@ unsigned long sendingTime = 0;
 
 void setInterruptionFlag();
 
-void send(String &str, uint8_t address);
+void radioManager_startSending(String &str, uint8_t address);
 
 void bufferedSend(String &str, uint8_t destinationAddress);
 
@@ -76,7 +76,7 @@ void receiveLoop();
 
 void dataReceived(const String &str);
 
-void waitForAckTimeoutLoop();
+void radioManager_waitForAckTimeoutLoop();
 
 //void sendLoop_previousAckWaiting();
 //void bufferedSendAndWaitForAckWithWaitingUntilPreviousAckIsReceived(String &str, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload));
@@ -98,12 +98,12 @@ void (*ackReceivedCallback)();
 //void (*ackReceivedCallback_previousAckWaiting)();
 
 
-bool isAckPayloadAndValidMessageId(String str);
+bool radioManager_isAckPayloadAndValidMessageId(String str);
 
 void extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(String &str);
 int splitString(String &text, String *texts, char ch);
 
-bool isAckPayload(String str);
+bool radioManager_isAckPayload(String str);
 
 void setup() {
     Serial.begin(115200);
@@ -155,7 +155,7 @@ void loop() {
 //    delay(1000);
 }
 
-void waitForAckTimeoutLoop() {
+void radioManager_waitForAckTimeoutLoop() {
     if (waitingForAck && !ackReceived) {
         if (millis() - waitForAckStartTime >= ackTimeout) {
             waitingForAck = false;
@@ -251,12 +251,12 @@ int splitString(String &text, String *texts, char ch) { // Split the string into
     return stringCount;
 }
 
-bool isAckPayload(String str) {
+bool radioManager_isAckPayload(String str) {
     Serial.print(F("isAckPayload, str = "));
     return str.charAt(0) == '!';
 }
 
-bool isAckPayloadAndValidMessageId(String str) {
+bool radioManager_isAckPayloadAndValidMessageId(String str) {
     Serial.print(F("isAckPayloadAndValidMessageId, str = "));
     Serial.println(str);
     if (str.charAt(0) == '!') {
@@ -407,7 +407,7 @@ void sendLoop() {
     }
 }
 
-void send(String &str, uint8_t address) {
+void radioManager_startSending(String &str, uint8_t address) {
 //    Serial.println("Sending: [" + str + "] to " + address);
     Serial.print(F("Sending: ["));
     Serial.print(str);

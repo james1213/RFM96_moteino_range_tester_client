@@ -65,12 +65,12 @@ void CheckForWirelessHEX(RadioOta& radio, SPIFlash& flash, uint8_t DEBUG, uint8_
         uint16_t remoteID = radio.SENDERID;
         if (radio.DATALEN == 7 && radio.DATA[4]=='E' && radio.DATA[5]=='O' && radio.DATA[6]=='F')
         { //sender must have not received EOF ACK so just resend
-            radio.send(remoteID, "FLX?OK",6);
+            radio.sendWithRetry(remoteID, "FLX?OK",6);
         }
 #ifdef SHIFTCHANNEL
-            else if (HandleWirelessHEXDataWrapper(radio, remoteID, flash, DEBUG, LEDpin))
+        else if (HandleWirelessHEXDataWrapper(radio, remoteID, flash, DEBUG, LEDpin))
 #else
-        else if (HandleWirelessHEXData(radio, remoteID, flash, DEBUG, LEDpin))
+            else if (HandleWirelessHEXData(radio, remoteID, flash, DEBUG, LEDpin))
 #endif
         {
             if (DEBUG) Serial.print(F("FLASH IMG TRANSMISSION SUCCESS!\n"));
@@ -103,12 +103,12 @@ uint8_t HandleHandshakeACK(RadioOta& radio, SPIFlash& flash, uint8_t flashCheck)
             deviceID=idNow;
         }
         if (deviceID==0) {
-            radio.sendACK("FLX?NOK:NOFLASH",15); //NO FLASH CHIP FOUND, ABORTING
+            radio.sendWithRetry(radio.SENDERID, "FLX?NOK:NOFLASH",15); //NO FLASH CHIP FOUND, ABORTING
             Serial.println(F("FAIL:NO FLASH MEM"));
             return false;
         }
     }
-    radio.sendACK("FLX?OK",6); //ACK the HANDSHAKE
+    radio.sendWithRetry(radio.SENDERID, "FLX?OK",6); //ACK the HANDSHAKE
     return true;
 }
 
@@ -119,13 +119,15 @@ uint8_t HandleHandshakeACK(RadioOta& radio, SPIFlash& flash, uint8_t flashCheck)
 //===================================================================================================================
 #ifdef SHIFTCHANNEL
 uint8_t HandleWirelessHEXDataWrapper(RadioOta& radio, uint16_t remoteID, SPIFlash& flash, uint8_t DEBUG, uint8_t LEDpin) {
-  if (!HandleHandshakeACK(radio, flash)) return false;
-  if (DEBUG) { Serial.println(F("FLX?OK (ACK sent)")); Serial.print(F("Shifting channel to ")); Serial.println(radio.getFrequency() + SHIFTCHANNEL);}
-  radio.setFrequency(radio.getFrequency() + SHIFTCHANNEL); //shift center freq by SHIFTCHANNEL amount
-  uint8_t result = HandleWirelessHEXData(radio, remoteID, flash, DEBUG, LEDpin);
-  if (DEBUG) { Serial.print(F("UNShifting channel to ")); Serial.println(radio.getFrequency() - SHIFTCHANNEL);}
-  radio.setFrequency(radio.getFrequency() - SHIFTCHANNEL); //restore center freq
-  return result;
+    Serial.print(F("RFM95_OTA | inside HandleWirelessHEXDataWrapper()"));
+    if (!HandleHandshakeACK(radio, flash)) return false;
+    Serial.print(F("RFM95_OTA | after if (!HandleHandshakeACK(radio, flash)) return false;"));
+    if (DEBUG) { Serial.println(F("FLX?OK (ACK sent)")); Serial.print(F("Shifting channel to ")); Serial.println(radio.getFrequency() + SHIFTCHANNEL);}
+    radio.setFrequency(radio.getFrequency() + SHIFTCHANNEL); //shift center freq by SHIFTCHANNEL amount
+    uint8_t result = HandleWirelessHEXData(radio, remoteID, flash, DEBUG, LEDpin);
+    if (DEBUG) { Serial.print(F("UNShifting channel to ")); Serial.println(radio.getFrequency() - SHIFTCHANNEL);}
+    radio.setFrequency(radio.getFrequency() - SHIFTCHANNEL); //restore center freq
+    return result;
 }
 #endif
 
@@ -135,6 +137,7 @@ uint8_t HandleWirelessHEXDataWrapper(RadioOta& radio, uint16_t remoteID, SPIFlas
 // the complete transmission of the HEX image at the OTA programmed node side
 //===================================================================================================================
 uint8_t HandleWirelessHEXData(RadioOta& radio, uint16_t remoteID, SPIFlash& flash, uint8_t DEBUG, uint8_t LEDpin) {
+    Serial.println(F("RFM95_OTA | inside HandleWirelessHEXData()"));
     uint32_t now=0;
     uint16_t tmp,seq=0;
     char buffer[16];
@@ -160,8 +163,15 @@ uint8_t HandleWirelessHEXData(RadioOta& radio, uint16_t remoteID, SPIFlash& flas
 
     while(1)
     {
-        if (radio.receiveDone() && radio.SENDERID == remoteID)
-        {
+//        if (radio.receiveDone() && radio.SENDERID == remoteID)
+//        {
+        unsigned long now2 = millis();
+        while(!radio.receiveDone() && millis() - now2 < 500) {
+            radio.radioLoop();
+        }
+        Serial.print(F("RFM95_OTA | HandleWirelessHEXData(), after while(!radio.receiveDone() && millis() - now < 500), radio.SENDERID = "));
+        Serial.println(radio.SENDERID);
+        if (radio.SENDERID == remoteID) {
             uint8_t dataLen = radio.DATALEN;
 
             digitalWrite(LEDpin,HIGH);
@@ -215,7 +225,7 @@ uint8_t HandleWirelessHEXData(RadioOta& radio, uint16_t remoteID, SPIFlash& flas
                         //send ACK
                         tmp = sprintf(buffer, "FLX:%u:OK", tmp);
                         if (DEBUG) Serial.println((char*)buffer);
-                        radio.sendACK(buffer, tmp);
+                        radio.sendWithRetry(radio.SENDERID, buffer, tmp);
                     }
                 }
 
@@ -244,7 +254,7 @@ uint8_t HandleWirelessHEXData(RadioOta& radio, uint16_t remoteID, SPIFlash& flas
 #else //assuming atmega328p
                         if ((bytesFlashed-10)>31744) {
                             if (DEBUG) Serial.println(F("IMG > 31k, too big"));
-                            radio.sendACK("FLX?NOK:HEX>31k",15);
+                            radio.sendWithRetry(radio.SENDERID, "FLX?NOK:HEX>31k",15);
                             return false; //just return, let MAIN timeout
                         }
 #endif
@@ -312,21 +322,26 @@ uint8_t CheckForSerialHEX(uint8_t* input, uint8_t inputLen, RadioOta& radio, uin
 //    Serial.print(F("RFM95_OTA | CheckForSerialHEX(), input[3] = "));
 //    Serial.println((char) input[3]);
     if (inputLen == 4 && input[0]=='F' && input[1]=='L' && input[2]=='X' && input[3]=='?') {
-        Serial.print(F(", inside if"));
+//        Serial.print(F(", inside if"));
         if (HandleSerialHandshake(radio, targetID, false, TIMEOUT, ACKTIMEOUT, DEBUG))
         {
-            Serial.print(F(", inside second if"));
+            Serial.print(F("   #inside second if"));
             if (radio.DATALEN >= 7 && radio.DATA[4] == 'N')
             {
+                Serial.print(F("   #inside third if"));
                 Serial.println((char*)radio.DATA); //signal serial handshake fail/error and return
                 return false;
             }
 
+            Serial.print(F("   #after third if"));
+
             Serial.println(F("\nFLX?OK")); //signal serial handshake back to host script
 #ifdef SHIFTCHANNEL
+
+//            Serial.print(F("   #before HandleSerialHEXDataWrapper"));
             if (HandleSerialHEXDataWrapper(radio, targetID, TIMEOUT, ACKTIMEOUT, DEBUG))
 #else
-            if (HandleSerialHEXData(radio, targetID, TIMEOUT, ACKTIMEOUT, DEBUG))
+                if (HandleSerialHEXData(radio, targetID, TIMEOUT, ACKTIMEOUT, DEBUG))
 #endif
             {
                 Serial.println(F("FLX?OK")); //signal EOF serial handshake back to host script
@@ -351,13 +366,26 @@ uint8_t HandleSerialHandshake(RadioOta& radio, uint16_t targetID, uint8_t isEOF,
 
     while (millis()-now<TIMEOUT)
     {
-        if (radio.sendWithRetry(targetID, isEOF ? "FLX?EOF" : "FLX?", isEOF?7:4, 2,ACKTIMEOUT))
-            if (radio.DATALEN >= 6 && radio.DATA[0]=='F' && radio.DATA[1]=='L' && radio.DATA[2]=='X' && radio.DATA[3]=='?')
-                if (DEBUG) Serial.println(F("Handshake ok"));
-                return true;
-    }
+        if (radio.sendWithRetry(targetID, isEOF ? "FLX?EOF" : "FLX?", isEOF?7:4, 2,ACKTIMEOUT)) {
+//            if (DEBUG) Serial.print(F("   #inside radio.sendWithRetry "));
+            unsigned long now2 = millis();
+            while(!radio.receiveDone() && millis() - now2 < 500) {
+                radio.radioLoop();
+            } //wait for ACK
+//            if (DEBUG) {
+//                Serial.print(F("   #after while radio.SENDERID = "));
+//                Serial.print(radio.SENDERID);
+//            }
+            if (radio.SENDERID == targetID) {
+                if (radio.DATALEN >= 6 && radio.DATA[0]=='F' && radio.DATA[1]=='L' && radio.DATA[2]=='X' && radio.DATA[3]=='?') {
+                    if (DEBUG) Serial.print(F("   #Handshake ok"));
+                    return true;
+                }
+            }
+        }
 
-    if (DEBUG) Serial.println(F("Handshake fail"));
+    }
+    if (DEBUG) Serial.print(F("   #Handshake fail"));
     return false;
 }
 
@@ -367,10 +395,11 @@ uint8_t HandleSerialHandshake(RadioOta& radio, uint16_t targetID, uint8_t isEOF,
 //===================================================================================================================
 #ifdef SHIFTCHANNEL
 uint8_t HandleSerialHEXDataWrapper(RadioOta& radio, uint16_t targetID, uint16_t TIMEOUT, uint16_t ACKTIMEOUT, uint8_t DEBUG) {
-  radio.setFrequency(radio.getFrequency() + SHIFTCHANNEL); //shift center freq by SHIFTCHANNEL amount
-  uint8_t result = HandleSerialHEXData(radio, targetID, TIMEOUT, ACKTIMEOUT, DEBUG);
-  radio.setFrequency(radio.getFrequency() - SHIFTCHANNEL); //shift center freq by SHIFTCHANNEL amount
-  return result;
+//    Serial.print(F("   #inside HandleSerialHEXDataWrapper()"));
+    radio.setFrequency(radio.getFrequency() + SHIFTCHANNEL); //shift center freq by SHIFTCHANNEL amount
+    uint8_t result = HandleSerialHEXData(radio, targetID, TIMEOUT, ACKTIMEOUT, DEBUG);
+    radio.setFrequency(radio.getFrequency() - SHIFTCHANNEL); //shift center freq by SHIFTCHANNEL amount
+    return result;
 }
 #endif
 
@@ -380,6 +409,7 @@ uint8_t HandleSerialHEXDataWrapper(RadioOta& radio, uint16_t targetID, uint16_t 
 // this is called at the OTA programmer side
 //===================================================================================================================
 uint8_t HandleSerialHEXData(RadioOta& radio, uint16_t targetID, uint16_t TIMEOUT, uint16_t ACKTIMEOUT, uint8_t DEBUG) {
+//    Serial.print(F("   #inside HandleSerialHEXData()"));
     long now=millis();
     uint16_t seq=0, tmp=0, inputLen;
     uint16_t remoteID = radio.SENDERID; //save the remoteID as soon as possible
@@ -424,6 +454,7 @@ uint8_t HandleSerialHEXData(RadioOta& radio, uint16_t targetID, uint16_t TIMEOUT
                             //Serial.print(F("PREP "));Serial.print(sendBufLen); Serial.print(F(" > ")); PrintHex83(sendBuf, sendBufLen);
 
                             //SEND RADIO DATA
+//                            Serial.print(F("   #before sendHEXPacket"));
                             if (sendHEXPacket(radio, remoteID, sendBuf, sendBufLen, seq, TIMEOUT, ACKTIMEOUT, DEBUG))
                             {
                                 sprintf((char*)sendBuf, "FLX:%u:OK",seq);
@@ -522,12 +553,18 @@ uint8_t BYTEfromHEX(char MSB, char LSB)
 //===================================================================================================================
 uint8_t sendHEXPacket(RadioOta& radio, uint16_t targetID, uint8_t* sendBuf, uint8_t hexDataLen, uint16_t seq, uint16_t TIMEOUT, uint16_t ACKTIMEOUT, uint8_t DEBUG)
 {
+//    Serial.print(F("   # sendHEXPacket()"));
     long now = millis();
 
     while(1) {
         if (DEBUG) { Serial.print(F("RFTX > ")); PrintHex83(sendBuf, hexDataLen); Serial.println(); }
         if (radio.sendWithRetry(targetID, sendBuf, hexDataLen, 2, ACKTIMEOUT))
         {
+//            Serial.print(F("   # sendHEXPacket(), inside radio.sendWithRetry"));
+            unsigned long now2 = millis();
+            while(!radio.receiveDone() && millis() - now2 < 500) {
+                radio.radioLoop();
+            }
             uint8_t ackLen = radio.DATALEN;
 
             if (DEBUG) { Serial.print(F("RFACK > ")); Serial.print(ackLen); Serial.print(F(" > ")); PrintHex83((uint8_t*)radio.DATA, ackLen); Serial.println(); }

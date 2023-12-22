@@ -11,8 +11,8 @@ RadioOta::RadioOta(RadioManager* manager) {
 void RadioOta::send(uint16_t toAddress, const void* buffer, uint8_t bufferSize, bool requestACK) {
     String strBuffer = String((const char*)buffer); //TODO czy ta zamiana zadziała?
 
-    Serial.print(F("RADIO_OTA | send(), strBuffer = "));
-    Serial.println(strBuffer);
+    Serial.print(F("   #RADIO_OTA | send(), strBuffer = "));
+    Serial.print(strBuffer);
 
 
 //    String strBuffer = "";
@@ -20,7 +20,13 @@ void RadioOta::send(uint16_t toAddress, const void* buffer, uint8_t bufferSize, 
 //        strBuffer += (char) buffer[i];
 //    }
 
-    manager->send(strBuffer, toAddress, requestACK, false);
+    manager->send(strBuffer, toAddress, requestACK, true, []() {
+                      Serial.print(F("   #RADIO_OTA | ACK OK"));
+                  },
+                  [](String &payload) {
+                      Serial.print(F("   #RADIO_OTA | ACK NOT OK, payload = "));
+//                                  Serial.println(payload);
+                  });
 
     //czekania aż wyśle (nadejdzie przerwanie TXDone) i zostanie przestawiony na tryb nasłuchu
     uint32_t now = millis();
@@ -40,17 +46,17 @@ void RadioOta::sendACK(const void* buffer, uint8_t bufferSize) {
 
 bool RadioOta::receiveDone() {
     if (manager->isHaveDate()) {
-        Serial.println(F("RADIO_OTA | isHaveDate()"));
+//        Serial.print(F("   #RADIO_OTA | isHaveDate()"));
         manager->setHaveData(false);
         SENDERID = manager->getSenderIdOfLastMessage();
-        Serial.print(F("RADIO_OTA | SENDERID = "));
-        Serial.println(SENDERID);
+//        Serial.print(F("   #RADIO_OTA | SENDERID = "));
+        Serial.print(SENDERID);
         String receivedData = manager->getLastReceivedData();
-        Serial.print(F("RADIO_OTA | receivedData = "));
-        Serial.println(receivedData);
+//        Serial.print(F("   #RADIO_OTA | receivedData = "));
+        Serial.print(receivedData);
         DATALEN = receivedData.length();
-        Serial.print(F("RADIO_OTA | DATALEN = "));
-        Serial.println(DATALEN);
+//        Serial.print(F("   #RADIO_OTA | DATALEN = "));
+//        Serial.print(DATALEN);
 
 //        receivedData.c_str();
 //        receivedData.toCharArray((char*)DATA, RF69_MAX_DATA_LEN+1);
@@ -77,6 +83,8 @@ bool RadioOta::receiveDone() {
 }
 
 
+
+
 //tutaj będzie blokujące
 //bool RadioOta::sendWithRetry(uint16_t toAddress, const void* buffer, uint8_t bufferSize, uint8_t retries, uint8_t retryWaitTime) {
 //    Serial.println(F("RADIO_OTA | sendWithRetry()"));
@@ -101,7 +109,7 @@ bool RadioOta::receiveDone() {
 //}
 
 bool RadioOta::sendWithRetry(uint16_t toAddress, const void* buffer, uint8_t bufferSize, uint8_t retries, uint8_t retryWaitTime) {
-    Serial.println(F("RADIO_OTA | sendWithRetry()"));
+    Serial.print(F("   #RADIO_OTA | sendWithRetry()"));
 
     // todo While na całość
     for (uint8_t i = 0; i < retries; i++)
@@ -111,12 +119,12 @@ bool RadioOta::sendWithRetry(uint16_t toAddress, const void* buffer, uint8_t buf
             manager->radioLoop();
         }
         if (ACKReceived(toAddress)) {
-            Serial.println(F("RADIO_OTA | sendWithRetry(), ACK RECEIVED"));
+            Serial.print(F("   #RADIO_OTA | sendWithRetry(), ACK RECEIVED"));
             return true;
         }
 
     }
-    Serial.println(F("RADIO_OTA | sendWithRetry(), NO ACK RECEIVED"));
+    Serial.print(F("   #RADIO_OTA | sendWithRetry(), NO ACK RECEIVED"));
     return false;
 }
 
@@ -134,4 +142,8 @@ void RadioOta::setFrequency(uint32_t freqHz) {
 
 uint32_t RadioOta::getFrequency() {
 
+}
+
+void RadioOta::radioLoop() {
+    manager->radioLoop();
 }

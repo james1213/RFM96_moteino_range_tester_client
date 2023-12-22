@@ -103,7 +103,7 @@ void onReceive(int packetSize);
 void onTxDone();
 void LoRa_rxMode();
 boolean runEvery(unsigned long interval);
-void LoRa_sendMessage(String message);
+void radioManager_LoRa_sendMessage(String message);
 
 void setup() {
     Serial.begin(115200);                   // initialize serial
@@ -147,12 +147,12 @@ void LoRa_rxMode(){
     LoRa.receive();                       // set receive mode
 }
 
-void LoRa_txMode(){
+void radioManager_LoRa_txMode(){
     LoRa.idle();                          // set standby mode
 //    LoRa.disableInvertIQ();               // normal mode
 }
 
-void LoRa_sendMessage(String message) {
+void radioManager_LoRa_sendMessage(String message) {
     LoRa_txMode();                        // set tx mode
     LoRa.beginPacket();                   // start packet
     LoRa.print(message);                  // add payload

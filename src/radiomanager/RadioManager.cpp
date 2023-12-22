@@ -162,14 +162,22 @@ void RadioManager::receiveLoop() {
                 ackReceivedCallback();
             }
         } else {
-            Serial.println(F("RadioManager | _haveData = true"));
+//            Serial.println(F("RadioManager | _haveData = true"));
             _haveData = true;
             lastReceivedData = str;
             if (dataReceivedCallback) {
                 dataReceivedCallback(str, senderIdOfLastMessage);
             }
             if (receivedMessageIdOfLastMessage != 0) {
+//                Serial.println(F("RadioManager | checking if it is need to send ACK"));
+//                Serial.print(F("RadioManager | !isAckPayload(str) = "));
+//                Serial.println(!isAckPayload(str));
+//                Serial.print(F("RadioManager | needToSendAckToSender = "));
+//                Serial.println(needToSendAckToSender);
+//                Serial.print(F("RadioManager | sendAckAutomaticly = "));
+//                Serial.println(sendAckAutomaticly);
                 if (!isAckPayload(str) && needToSendAckToSender && sendAckAutomaticly) {
+//                    Serial.println(F("RadioManager | inside: !isAckPayload(str) && needToSendAckToSender && sendAckAutomaticly"));
                     sendAck();
                 }
             } else {
@@ -181,7 +189,9 @@ void RadioManager::receiveLoop() {
 
 void RadioManager::sendAck() {
     DEBUGlog(F("Sending ACK to address: "));
+//    Serial.print(F("Sending ACK to address: "));
     DEBUGlogln(senderIdOfLastMessage);
+//    Serial.println(senderIdOfLastMessage);
     String ackString = "!";
     ackString.concat(receivedMessageIdOfLastMessage);
     send(ackString, senderIdOfLastMessage);

@@ -33,6 +33,8 @@ public:
     bool isWaitingForAck();
     uint32_t getFrequency();
     void setFrequency(uint32_t freqHz);
+
+    void radioLoop();
 };
 
 
