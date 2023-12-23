@@ -1,0 +1,88 @@
+/*
+  Base64 decode example
+
+  Decodes the text "QmFzZTY0RGVjb2RlRXhhbXBsZQA=" to "Base64DecodeExample"
+
+  Created 04 May 2016
+  by Arturo Guadalupi
+
+  This example code is in the public domain.
+
+*/
+#include <Arduino.h>
+#include <Base64.h>
+
+//void setup()
+//{
+//    // start serial port at 115200 bps:
+//    Serial.begin(115200);
+//    while (!Serial) {
+//        ; // wait for serial port to connect. Needed for native USB only
+//    }
+//
+//    // encoding
+//    char inputString[] = "QmFzZTY0RGVjb2RlRXhhbXBsZQA=";
+//    int inputStringLength = sizeof(inputString);
+//
+//    Serial.print("Input string is:\t");
+//    Serial.println(inputString);
+//
+//    Serial.println();
+//
+//    int decodedLength = Base64.decodedLength(inputString, inputStringLength);
+//    char decodedString[decodedLength];
+//    Base64.decode(decodedString, inputString, inputStringLength);
+//    Serial.print("Decoded string is:\t");
+//    Serial.println(decodedString);
+//}
+
+void setup()
+{
+    // start serial port at 115200 bps:
+    Serial.begin(115200);
+    while (!Serial) {
+        ; // wait for serial port to connect. Needed for native USB only
+    }
+
+    // encoding
+    String inputString = "Base64EncodeExample";
+    int inputStringLength = inputString.length();
+    char* inputStrC = (char*)inputString.c_str();
+
+//    char inputString[] = "Base64EncodeExample";
+//    int inputStringLength = sizeof(inputString);
+
+    Serial.print("Input string is:\t");
+    Serial.println(inputString);
+
+    Serial.println();
+
+    int encodedLength = Base64.encodedLength(inputStringLength);
+    char encodedString[encodedLength];
+//    Base64.encode(encodedString, inputString, inputStringLength);
+//    Base64.encode(encodedString, inputStrC, inputStringLength);
+    Base64.encode(encodedString, (char*)inputString.c_str(), inputStringLength);
+    Serial.print("Encoded string is:\t");
+    Serial.println(encodedString);
+
+
+    // decoding
+//    char inputString[] = "QmFzZTY0RGVjb2RlRXhhbXBsZQA=";
+    int encodedStringLength = sizeof(encodedString);
+
+    Serial.print("\nEncoded input string is:\t");
+    Serial.println(encodedString);
+
+    Serial.println();
+
+    int decodedLength = Base64.decodedLength(encodedString, encodedStringLength);
+    char decodedString[decodedLength];
+    Base64.decode(decodedString, encodedString, encodedStringLength);
+    Serial.print("Decoded string is:\t");
+    Serial.println(decodedString);
+}
+
+
+void loop() {
+
+}

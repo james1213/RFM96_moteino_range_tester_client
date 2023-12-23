@@ -53,9 +53,11 @@ public:
     void (*ackNotReceivedCallback)(String &payload);
     void (*ackReceivedCallback)();
     void (*dataReceivedCallback)(String &receivedText, uint8_t senderId);
+    void (*otaDataReceivedCallback)(String &receivedText, uint8_t senderId);
     void (*dataSentCallback)();
 
     String sendBuffer = "";
+    String ackSendBuffer = "";
     uint8_t messageId = 0;
     uint8_t destinationAddress = 0;
     uint8_t destinationIdOfLastMessage = 0;
@@ -88,7 +90,7 @@ public:
 //void dataReceived(const String &str);
     void waitForAckTimeoutLoop();
 //void bufferedSendAndWaitForAck(String &str, uint8_t address, void (*_ackReceivedCallback)(),void (*_ackNotReceivedCallback)(String &payload));
-    void send(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
+    void send(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
     void startSending(String &str, uint8_t address);
     void LoRa_sendMessage(String message);
     void LoRa_txMode();
@@ -119,6 +121,10 @@ public:
     void DEBUGlog(long n, int base = 10);
 
     void dumpRegisters();
+
+    void onOtaDataReceived(void (*callback)(String &, uint8_t));
+
+    bool isOtaPayload(String str);
 };
 
 

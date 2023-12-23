@@ -3,6 +3,7 @@
 #include <ota/RadioOta.h>
 #include <ota/RFM95_OTA.h>
 #include <SPIFlash.h>
+#include "arduino_base64.hpp"
 
 #define NODE_ID 0x01
 #define NODE_ID_BROADCAST 0xFF
@@ -19,12 +20,35 @@ RadioManager *manager = new RadioManager();
 
 boolean runEvery(unsigned long interval);
 
-//uint8_t source[3][10] = {{2,5,4,8,5,4,7,9,2, 7},
-//                         {8,1,3,5,2,7,1,8,0, 0},
-//                         {9,2,2,3,1,3,6,3,6, 1}};
-//byte destination[3][10];
-//
-//bool otaSend = false;
+#define HEX_SIZE 3
+
+uint8_t source[3][10] = {{0x17, 0x77, 0x3B, 0x11, 0x82, 0xA4, 0xC4, 0xC8, 0xFF, 0x2B},
+                         {0x14, 0x77, 0x3B, 0x11, 0x82, 0xA4, 0xC4, 0xC8, 0xFF, 0x3B},
+                         {0x15, 0x77, 0x3B, 0x11, 0x82, 0xA4, 0xC4, 0xC8, 0xFF, 0x4D}};
+
+bool handshakeReceived = true;
+bool waitingForSendHex = false;
+unsigned long handshakeSendStartTime = 0;
+uint8_t handshakeTryes = 0;
+int hexSendingIndex = 0;
+bool hexAckReceived = false;
+uint8_t hexSendTryes = 0;
+const uint8_t HEX_SENDING_TRYES = 3;
+const uint8_t HANDSHAKE_SENDING_TRYES = 3;
+
+enum OtaState {
+    WAITING_FOR_START,
+    SENDING_HANDSHAKE,
+    WAITING_FOR_HANDSHAKE_RESPONSE,
+    HANDSHAKE_RESPONSE_RECEIVED,
+    SENDING_HEX,
+    WAITING_FOR_HEX_ACK,
+    WAITING_FOR_HEX_RESPONSE,
+    HEX_RESPONSE_RECEIVED
+};
+
+//OtaState otaState = OtaState(WAITING_FOR_START);
+OtaState otaState = OtaState(SENDING_HANDSHAKE);
 
 void setupSerial();
 
@@ -34,42 +58,113 @@ void setupFlash();
 
 void dataReceived(String &str, uint8_t senderId);
 
-//void otaLoop();
+void otaLoop();
 
-//bool sendHandshake();
+void sendHandshake();
 
-//void otaLoop() {
-//    if (!otaSend) { //TODO sprawdzenie czy komp coś wysyłą
-//        otaSend = true;
-//        Serial.println(F("OTA | Sending..."));
-//        sendHandshake();
-//    }
-//}
+void otaLoop() {
+    if (otaState == OtaState(SENDING_HANDSHAKE)) { //TODO sprawdzenie czy komp coś wysyłą
+        Serial.println(F("OTA | SENDING_HANDSHAKE"));
+        handshakeTryes++;
+        sendHandshake();
+        handshakeSendStartTime = millis();
+        otaState = OtaState(WAITING_FOR_HANDSHAKE_RESPONSE);
+    } else if (otaState == OtaState(WAITING_FOR_HANDSHAKE_RESPONSE)) {
+        if (handshakeTryes >= HANDSHAKE_SENDING_TRYES) {
+            otaState = OtaState(WAITING_FOR_START);
+            Serial.println(F("OTA | Handshake response not received, retries number exceeded. Not sending again"));
+        } else if (millis() - handshakeSendStartTime > 1000) {
+            otaState = OtaState(SENDING_HANDSHAKE);
+            Serial.println(F("OTA | Trying to send handshake again"));
+        }
+    } else if (otaState == OtaState(HANDSHAKE_RESPONSE_RECEIVED)) {
+        Serial.println(F("OTA | HANDSHAKE_RESPONSE_RECEIVED"));
+        handshakeTryes = 0;
+        hexSendingIndex = 0;
+        hexSendTryes = 0;
+        otaState = OtaState(SENDING_HEX);
+    } else if (otaState == OtaState(SENDING_HEX)) {
 
-//void sendHandshake() {
-//    String handshakeStr = "<OTA>FLX?";
-//    manager->send(handshakeStr, NODE_ID_TO_SEND, true, true,
-//                  []() {
-//                      Serial.println(F("OTA | OK"));
-//                  },
-//                  [](String &payload) {
-//                      Serial.print(F("OTA | NOT OK, payload = "));
-//                      Serial.println(payload);
-//                  });
-//}
+        auto inputLength = sizeof(source[hexSendingIndex]);
+        char output[base64::encodeLength(inputLength)];
+        base64::encode(source[hexSendingIndex], inputLength, output);
+
+        String sourceStr = "<OTA>" + String(output);
+
+        Serial.print(F("OTA | SENDING_HEX: ["));
+        Serial.print(sourceStr);
+        Serial.println(F("]"));
+        manager->send(sourceStr, NODE_ID_TO_SEND, true, true,
+                      []() {
+                          Serial.println(F("OTA | HEX ACK received"));
+                          hexSendTryes = 0;
+                          hexSendingIndex++;
+                          if (hexSendingIndex == HEX_SIZE) {
+                              otaState = OtaState(WAITING_FOR_START);
+                              Serial.println(F("OTA | FINISHED"));
+                          } else {
+                              otaState = OtaState(SENDING_HEX);
+                          }
+                      },
+                      [](String &payload) {
+                          Serial.println(F("OTA | HEX ACK not received"));
+                          hexSendTryes++;
+                          if (hexSendTryes >= HEX_SENDING_TRYES) {
+                              otaState = OtaState(WAITING_FOR_START);
+                              Serial.println(F("OTA | HEX ACK not received, retries number exceeded. Not sending again"));
+                          } else {
+                              otaState = OtaState(SENDING_HEX);
+                          }
+                      });
+        otaState = OtaState(WAITING_FOR_HEX_ACK);
+        delay(2000);
+    }
+}
+
+void sendHandshake() {
+    String handshakeStr = "<OTA>FLX?";
+    manager->send(handshakeStr, NODE_ID_TO_SEND, true, true,
+                  []() {
+                      Serial.println(F("OTA | handshake ACK received"));
+                  },
+                  [](String &payload) {
+                      Serial.println(F("OTA | handshake ACK not received"));
+//                      handshakeReceived = false;
+                  });
+}
+
+void otaDataReceived(String &str, uint8_t senderId) {
+    Serial.print(F("OTA | otaDataReceived: \""));
+    Serial.print(str);
+    Serial.print(F("\" from senderId: "));
+    Serial.println(senderId);
+
+
+
+    String handshakeResponse = "FLX?OK";
+    String hexResponse = "HEX?OK";
+    if (str.equals(handshakeResponse)) {
+        otaState = OtaState(HANDSHAKE_RESPONSE_RECEIVED);
+        Serial.println(F("OTA | Handshake response received"));
+    } else if (str.equals(hexResponse)) {
+//        otaState = OtaState(HEX_RESPONSE_RECEIVED);
+        Serial.println(F("OTA | HEX response received"));
+    }
+}
 
 void setup() {
     setupSerial();
     Serial.println(F("ver. 1.1"));
     setupRadio();
     setupFlash();
+    delay(5000);
 }
 
 void setupRadio() {
     manager->onDataReceived(dataReceived);
-//    manager->onOtaDataReceived();
+    manager->onOtaDataReceived(otaDataReceived);
 
-        manager->onDataSent([]() {
+    manager->onDataSent([]() {
 //        Serial.println(F("MAIN | data sent"));
     });
 
@@ -117,57 +212,28 @@ void setupSerial() {
 void loop() {
     manager->radioLoop();
 
-    //non-blocking
-//    if (!getOtaInProgress()) {
-
-
-
-
-        if (runEvery(2000)) { // repeat every 1000 millis
-            Serial.println();
-
-            String str = "Hello World [#" + String(count++) + "] with ACK";
-            Serial.print(F("Sending payload: \""));
-            Serial.print(str);
-            Serial.println(F("\""));
-            manager->send(str, NODE_ID_TO_SEND, true, true,
-                              []() {
-                                  Serial.println(F("MAIN | OK"));
-                              },
-                              [](String &payload) {
-                                  Serial.print(F("MAIN | NOT OK, payload = "));
-                                  Serial.println(payload);
-                              });
-        }
-
-
-
-//    }
-//    if (radioOta->receiveDone()) {
-//        CheckForWirelessHEX(*radioOta, flash, false);
-//    }
-
-//blocking
-//    if (runEvery(2000)) {
+//    if (runEvery(2000)) { // repeat every 1000 millis
+//        Serial.println();
 //
 //        String str = "Hello World [#" + String(count++) + "] with ACK";
-////    uint16_t toAddress, const void* buffer, uint8_t bufferSize, bool requestACK= false
-////        radioOta->send(NODE_ID_TO_SEND, str.c_str(), str.length(), true);
-//        radioOta->sendWithRetry(NODE_ID_TO_SEND, str.c_str(), str.length(), 2);
-//    }
-//
-//    if (radioOta->receiveDone()) {
-//        Serial.println(F("MAIN | receiveDone()"));
-//        Serial.print(F("MAIN | SENDERID = "));
-//        Serial.println(radioOta->SENDERID);
-//        Serial.print(F("MAIN | DATALEN = "));
-//        Serial.println(radioOta->DATALEN);
-//        Serial.print(F("MAIN | DATA = "));
-//        Serial.println((char*)radioOta->DATA);
+//        Serial.print(F("Sending payload: \""));
+//        Serial.print(str);
+//        Serial.println(F("\""));
+//        manager->send(str, NODE_ID_TO_SEND, true, true,
+//                      []() {
+//                          Serial.println(F("MAIN | OK"));
+//                      },
+//                      [](String &payload) {
+//                          Serial.print(F("MAIN | NOT OK, payload = "));
+//                          Serial.println(payload);
+//                      });
 //    }
 
 
-//    otaLoop();
+
+
+
+    otaLoop();
 }
 
 void dataReceived(String &str, uint8_t senderId) {

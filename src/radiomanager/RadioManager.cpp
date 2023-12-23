@@ -117,12 +117,19 @@ void RadioManager::sendLoop() {
         if (!transmissionClenedUp) {
             transmissionClenedUp = true;
             DEBUGlogln(F("transmission finished!"));
-        } else if (!sendBuffer.equals("")) {
+        } else if (!sendBuffer.equals("") || !ackSendBuffer.equals("")) {
             DEBUGlog(F("[RFM96] Sending another packet ... "));
             transmissionFinished = false;
             transmissionClenedUp = false;
-            startSending(sendBuffer, destinationAddress);
-            sendBuffer = "";
+            if (!ackSendBuffer.equals("")) {
+                DEBUGlog(F("[RFM96] Sending ACK packet ... "));
+                startSending(ackSendBuffer, destinationAddress);
+                ackSendBuffer = "";
+            } else if (!sendBuffer.equals("")) {
+                DEBUGlog(F("[RFM96] Sending normal packet ... "));
+                startSending(sendBuffer, destinationAddress);
+                sendBuffer = "";
+            }
         }
     }
 }
@@ -165,17 +172,16 @@ void RadioManager::receiveLoop() {
 //            Serial.println(F("RadioManager | _haveData = true"));
             _haveData = true;
             lastReceivedData = str;
-            if (dataReceivedCallback) {
-                dataReceivedCallback(str, senderIdOfLastMessage);
-            }
+
+
             if (receivedMessageIdOfLastMessage != 0) {
-//                Serial.println(F("RadioManager | checking if it is need to send ACK"));
-//                Serial.print(F("RadioManager | !isAckPayload(str) = "));
-//                Serial.println(!isAckPayload(str));
-//                Serial.print(F("RadioManager | needToSendAckToSender = "));
-//                Serial.println(needToSendAckToSender);
-//                Serial.print(F("RadioManager | sendAckAutomaticly = "));
-//                Serial.println(sendAckAutomaticly);
+                DEBUGlogln(F("RadioManager | checking if it is need to send ACK"));
+                DEBUGlog(F("RadioManager | !isAckPayload(str) = "));
+                DEBUGlogln(!isAckPayload(str));
+                DEBUGlog(F("RadioManager | needToSendAckToSender = "));
+                DEBUGlogln(needToSendAckToSender);
+                DEBUGlog(F("RadioManager | sendAckAutomaticly = "));
+                DEBUGlogln(sendAckAutomaticly);
                 if (!isAckPayload(str) && needToSendAckToSender && sendAckAutomaticly) {
 //                    Serial.println(F("RadioManager | inside: !isAckPayload(str) && needToSendAckToSender && sendAckAutomaticly"));
                     sendAck();
@@ -183,6 +189,24 @@ void RadioManager::receiveLoop() {
             } else {
                 DEBUGlogln(F("[ACK] | Can not extract message id from received message"));
             }
+
+
+            if (isOtaPayload(str)) {
+                DEBUGlogln(F("Received OTA message"));
+                str = str.substring(5);
+                if (otaDataReceivedCallback) {
+                    otaDataReceivedCallback(str, senderIdOfLastMessage);
+                }
+            } else {
+                if (dataReceivedCallback) {
+                    dataReceivedCallback(str, senderIdOfLastMessage);
+                }
+            }
+
+
+
+
+
         }
     }
 }
@@ -194,7 +218,7 @@ void RadioManager::sendAck() {
 //    Serial.println(senderIdOfLastMessage);
     String ackString = "!";
     ackString.concat(receivedMessageIdOfLastMessage);
-    send(ackString, senderIdOfLastMessage);
+    send(ackString, senderIdOfLastMessage, false, true, nullptr, nullptr, true);
 }
 
 String RadioManager::readReceivedData() {
@@ -333,7 +357,7 @@ void RadioManager::waitForAckTimeoutLoop() {
 //    send(str, address, true);
 //}
 
-void RadioManager::send(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
+void RadioManager::send(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
     sendAckAutomaticly = _sendAckAutomaticly;
     if (ackRequested) {
         ackReceivedCallback = _ackReceivedCallback;
@@ -343,8 +367,13 @@ void RadioManager::send(String &str, uint8_t address, bool ackRequested, bool _s
         ackReceived = false;
         waitForAckStartTime = millis();
     }
-    sendBuffer = str;
-    messageId++;
+    if (useAckBuffer) {
+        ackSendBuffer = str;
+//        ackMessageId++;
+    } else {
+        sendBuffer = str;
+//        messageId++;
+    }
     if (messageId == 0) messageId = 1;
     destinationAddress = address;
     _ackRequested = ackRequested;
@@ -357,6 +386,8 @@ void RadioManager::startSending(String &str, uint8_t address) {
     DEBUGlog(F("] to "));
     DEBUGlogln(address);
     unsigned long startTime = micros();
+    messageId++;
+    if (messageId == 0) messageId = 1;
     str = String(address) + "@" + String(nodeId) + "@" + String(messageId) + "@" + (_ackRequested ? "1" : "0") + "@" + str + "`";
     DEBUGlog(F("Transmitting str: ["));
     DEBUGlog(str);
@@ -464,4 +495,29 @@ void RadioManager::DEBUGlog(long n, int base) {
 
 void RadioManager::dumpRegisters() {
     LoRa.dumpRegisters(Serial);
+}
+
+void RadioManager::onOtaDataReceived(void (*callback)(String &, uint8_t)) {
+    otaDataReceivedCallback = callback;
+}
+
+bool RadioManager::isOtaPayload(String str) {
+    DEBUGlog(F("isOtaPayload, str = "));
+    DEBUGlogln(str);
+    const char* data = str.c_str();
+
+
+//    DEBUGlog(F("isOtaPayload, data[0] = "));
+//    DEBUGlogln(data[0]);
+//    DEBUGlog(F("isOtaPayload, data[1] = "));
+//    DEBUGlogln(data[1]);
+//    DEBUGlog(F("isOtaPayload, data[2] = "));
+//    DEBUGlogln(data[2]);
+
+
+    bool returnValue = data[0] == '<' && data[1] == 'O' && data[2] == 'T' && data[3] == 'A' && data[4] == '>';
+
+    DEBUGlog(F("isOtaPayload, returnValue = "));
+    DEBUGlogln(returnValue);
+    return returnValue;
 }
