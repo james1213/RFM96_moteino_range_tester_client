@@ -141,7 +141,7 @@ void RadioOta::setFrequency(uint32_t freqHz) {
 }
 
 uint32_t RadioOta::getFrequency() {
-
+    return 0;
 }
 
 void RadioOta::radioLoop() {

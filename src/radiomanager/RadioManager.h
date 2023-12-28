@@ -90,6 +90,7 @@ public:
 //void dataReceived(const String &str);
     void waitForAckTimeoutLoop();
 //void bufferedSendAndWaitForAck(String &str, uint8_t address, void (*_ackReceivedCallback)(),void (*_ackNotReceivedCallback)(String &payload));
+    void sendOta(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
     void send(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
     void startSending(String &str, uint8_t address);
     void LoRa_sendMessage(String message);
@@ -100,7 +101,7 @@ public:
     uint8_t getSenderIdOfLastMessage();
     String getLastReceivedData();
     bool isHaveDate();
-    bool setHaveData(bool value);
+    void setHaveData(bool value);
     bool isTransmissionFinished();
     void setupRadio(uint8_t _nodeId, void(*onReceiveDoneCallback)(int), void(*onTxDoneCallback)());
     bool isNeedToSendAckToSender();

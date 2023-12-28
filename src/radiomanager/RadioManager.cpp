@@ -94,7 +94,7 @@ bool RadioManager::isHaveDate() {
     return _haveData;
 }
 
-bool RadioManager::setHaveData(bool value) {
+void RadioManager::setHaveData(bool value) {
     _haveData = value;
 }
 
@@ -118,15 +118,15 @@ void RadioManager::sendLoop() {
             transmissionClenedUp = true;
             DEBUGlogln(F("transmission finished!"));
         } else if (!sendBuffer.equals("") || !ackSendBuffer.equals("")) {
-            DEBUGlog(F("[RFM96] Sending another packet ... "));
+            DEBUGlogln(F("[RFM96] Sending another packet ... "));
             transmissionFinished = false;
             transmissionClenedUp = false;
             if (!ackSendBuffer.equals("")) {
-                DEBUGlog(F("[RFM96] Sending ACK packet ... "));
+                DEBUGlogln(F("[RFM96] Sending ACK packet ... "));
                 startSending(ackSendBuffer, destinationAddress);
                 ackSendBuffer = "";
             } else if (!sendBuffer.equals("")) {
-                DEBUGlog(F("[RFM96] Sending normal packet ... "));
+                DEBUGlogln(F("[RFM96] Sending normal packet ... "));
                 startSending(sendBuffer, destinationAddress);
                 sendBuffer = "";
             }
@@ -287,7 +287,7 @@ void RadioManager::extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(
 
 int RadioManager::splitString(String &text, String *texts, char ch, int maxArrayLength) { // Split the string into substrings
 //    unsigned int arrayLength = texts->length();
-    unsigned int arrayLength = maxArrayLength;
+    int arrayLength = maxArrayLength;
     int arrayIndex = 0;
     int stringCount = 0;
     while (text.length() > 0 && arrayIndex < arrayLength) {
@@ -356,6 +356,11 @@ void RadioManager::waitForAckTimeoutLoop() {
 ////    waitForAckStartTime = millis();
 //    send(str, address, true);
 //}
+
+void RadioManager::sendOta(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
+    String strOta = "<OTA>" + str;
+    send(strOta, address, ackRequested, _sendAckAutomaticly, _ackReceivedCallback, _ackNotReceivedCallback, useAckBuffer);
+}
 
 void RadioManager::send(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
     sendAckAutomaticly = _sendAckAutomaticly;
