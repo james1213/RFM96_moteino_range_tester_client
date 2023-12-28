@@ -10,36 +10,14 @@
 #include <Arduino.h>
 #include <LoRa.h>
 
-//#define NODE_ID 0x01
-
-//volatile bool transmissionFinished;
-//volatile bool receivedFlag;
-//unsigned long sendingTime;
-//volatile bool transmissionClenedUp;
-//volatile bool ackReceived;
-//bool waitingForAck;
-//unsigned long waitForAckStartTime;
-//unsigned long ackTimeout;
-//String ackCallback_paylod;
-//
-////void (*ackNotReceivedCallback)(String &payload);
-////
-////void (*ackReceivedCallback)();
-//
-//String sendBuffer;
-//uint8_t messageId;
-//uint8_t destinationAddress;
-//uint8_t destinationIdOfLastMessage;
-//uint8_t senderIdOfLastMessage;
-//uint8_t receivedMessageIdOfLastMessage;
 
 
+#define LOG_ACTIVE false
 
 
 class RadioManager {
 public:
     uint8_t nodeId = 0;
-    bool logActive = false;
     volatile bool transmissionFinished = true;
     volatile bool receivedFlag = false;
     unsigned long sendingTime = 0;
@@ -71,11 +49,8 @@ public:
     bool sendAckAutomaticly = true; //TODO czyba powinno być na stałe na false, a potem ręcznie wysyłać sendACK
     volatile bool _haveData;
 
-
     void onDataReceived(void(*callback)(String &receivedText, uint8_t senderId));
     void onDataSent(void(*callback)());
-
-//    void setupRadio();
     virtual void onReceiveDone(int packetSize);
     virtual void onTxDone();
     void LoRa_rxMode();
@@ -87,9 +62,7 @@ public:
     int splitString(String &text, String *texts, char ch, int maxArrayLength);
     bool isAckPayload(String str);
     bool isAckPayloadAndValidMessageId(String str);
-//void dataReceived(const String &str);
     void waitForAckTimeoutLoop();
-//void bufferedSendAndWaitForAck(String &str, uint8_t address, void (*_ackReceivedCallback)(),void (*_ackNotReceivedCallback)(String &payload));
     void sendOta(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
     void send(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
     void startSending(String &str, uint8_t address);
@@ -104,8 +77,11 @@ public:
     void setHaveData(bool value);
     bool isTransmissionFinished();
     void setupRadio(uint8_t _nodeId, void(*onReceiveDoneCallback)(int), void(*onTxDoneCallback)());
-    bool isNeedToSendAckToSender();
+    void dumpRegisters();
+    void onOtaDataReceived(void (*callback)(String &, uint8_t));
+    bool isOtaPayload(String str);
     int getReceivedPacketSize();
+    bool isNeedToSendAckToSender();
 
     void DEBUGlogln(const __FlashStringHelper *ifsh);
     void DEBUGlog(const __FlashStringHelper *ifsh);
@@ -120,12 +96,6 @@ public:
     void DEBUGlog(double n, int digits = 2);
     void DEBUGlogln(long n, int base = 10);
     void DEBUGlog(long n, int base = 10);
-
-    void dumpRegisters();
-
-    void onOtaDataReceived(void (*callback)(String &, uint8_t));
-
-    bool isOtaPayload(String str);
 };
 
 
