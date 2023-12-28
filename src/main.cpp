@@ -1,23 +1,18 @@
 #include <Arduino.h>
 #include <radiomanager/RadioManager.h>
-#include <ota/RadioOta.h>
-#include <ota/RFM95_OTA.h>
 #include <SPIFlash.h>
 #include "arduino_base64.hpp"
 #include <CRC32.h>
 
 #define NODE_ID 0x01
-#define NODE_ID_BROADCAST 0xFF
 #define NODE_ID_TO_SEND 0x02
 
 
 int count = 0;
 
-//RadioOta radioOta;
 SPIFlash flash(SS_FLASHMEM, 0xEF30); //EF30 for 4mbit  Windbond chip (W25X40CL)
 
 RadioManager *manager = new RadioManager();
-//RadioOta *radioOta = new RadioOta(manager);
 
 boolean runEvery(unsigned long interval);
 
@@ -58,7 +53,6 @@ enum OtaState {
     EOF_RESPONSE_RECEIVED
 };
 
-//OtaState otaState = OtaState(WAITING_FOR_START);
 OtaState otaState = OtaState(SENDING_HANDSHAKE);
 
 void setupSerial();
@@ -78,8 +72,6 @@ void sendHex();
 void sendEof();
 
 void otaLoop() {
-//    Serial.print(F("otaLoop(), otaState = "));
-//    Serial.println(otaState);
     if (otaState == OtaState(SENDING_HANDSHAKE)) { //TODO sprawdzenie czy komp coś wysyłą
         Serial.println(F("OTA | state = SENDING_HANDSHAKE"));
         handshakeTryes++;
@@ -111,7 +103,6 @@ void otaLoop() {
         otaState = OtaState(WAITING_FOR_HEX_RESPONSE);
     } else if (otaState == OtaState(WAITING_FOR_HEX_RESPONSE)) {
         if (hexSendTryes >= HEX_SENDING_TRYES_LIMIT) {
-            //minęły wszystkie próby wysłania hexa
             otaState = OtaState(WAITING_FOR_START);
             //TODO - wyświetlenie błędu w apce Javovej
             Serial.println(F("OTA | Handshake response not received, retries number exceeded. Not sending again"));
@@ -119,22 +110,12 @@ void otaLoop() {
             //timeout pojedynczej próby wysłania hexa
             otaState = OtaState(SENDING_HEX);
             Serial.println(F("OTA | Trying to send hex again"));
-
-            //pozywtywna odppwiedż z callbacka odbioru hexa
-            // i tam decyzja, czy wysłać kolejny hex, czy powtórzyć ten sam, czy zakońćzyć bo EOF
-
-
-            //zapewnienie aby nie można się było wbić w środek stanów z funkcji odbiorczej
-            //co jak się przerwie w środku stanów, powinien być powróć do stanu początkowego i początkowych zmiennych po jakimś czasi
-            //co jak przyjdzie początek handsahke a będziemy w innych stanie?
         }
     } else if (otaState == OtaState(HEX_RESPONSE_RECEIVED)) {
         Serial.println(F("OTA | state = HEX_RESPONSE_RECEIVED"));
         hexSendTryes = 0;
         hexSendingIndex++;
         if (hexSendingIndex == HEX_SIZE) {
-//            otaState = OtaState(WAITING_FOR_START);
-//            Serial.println(F("OTA | HEX FINISHED"));
             otaState = OtaState(SENDING_EOF);
             //TODO wysłanie EOF
         } else {
@@ -169,12 +150,10 @@ void sendHex() {
     char output[base64::encodeLength(inputLength)];
     base64::encode(source[hexSendingIndex], inputLength, output);
 
-//    String sourceStr = "<OTA>" + String(output);
     Serial.println(F("OTA | Calculating checksum"));
     String sourceStr = String(output);
     Serial.print(F("OTA | sourceStr = "));
     Serial.println(sourceStr);
-//    uint32_t checksum = CRC32::calculate(output, sizeof(output));
     uint32_t checksum = CRC32::calculate(sourceStr.c_str(), sourceStr.length());
     Serial.print(F("OTA | checksum = "));
     Serial.println(checksum);
@@ -188,27 +167,11 @@ void sendHex() {
     manager->sendOta(sourceStr, NODE_ID_TO_SEND, true, true,
                   []() {
                       Serial.println(F("OTA | HEX ACK received"));
-//                      hexSendTryes = 0;
-//                      hexSendingIndex++;
-//                      if (hexSendingIndex == HEX_SIZE) {
-//                          otaState = OtaState(WAITING_FOR_START);
-//                          Serial.println(F("OTA | FINISHED"));
-//                      } else {
-//                          otaState = OtaState(SENDING_HEX);
-//                      }
                   },
                   [](String &payload) {
                       Serial.println(F("OTA | HEX ACK not received"));
-//                      hexSendTryes++;
-//                      if (hexSendTryes >= HEX_SENDING_TRYES_LIMIT) {
-//                          otaState = OtaState(WAITING_FOR_START);
-//                          Serial.println(F("OTA | HEX ACK not received, retries number exceeded. Not sending again"));
-//                      } else {
-//                          otaState = OtaState(SENDING_HEX);
-//                      }
                   });
-//    otaState = OtaState(WAITING_FOR_HEX_ACK);
-//    delay(2000);
+    delay(2000);
 }
 
 void sendHandshake() {
@@ -225,7 +188,6 @@ void sendHandshake() {
 }
 
 void sendEof() {
-//    String handshakeStr = "<OTA>FLX?";
     String handshakeStr = "EOF?" + String(finalCrc32);
     manager->sendOta(handshakeStr, NODE_ID_TO_SEND, true, true,
                   []() {
@@ -295,9 +257,6 @@ void setupRadio() {
 //        Serial.println(F("MAIN | data sent"));
     });
 
-//    manager->setSendAckAutomaticly(false);
-//    sendAckAutomaticly = false;
-
     manager->setupRadio(NODE_ID,
                         [](int packetSize) {
                             manager->onReceiveDone(packetSize);
@@ -355,10 +314,6 @@ void loop() {
 //                          Serial.println(payload);
 //                      });
 //    }
-
-
-
-
 
     otaLoop();
 }
