@@ -107,13 +107,17 @@ int LoRaClass::begin(long frequency)
   digitalWrite(_ss, HIGH);
 
   if (_reset != -1) {
+      Serial.print("LoRaClass::begin: _reset =");
+      Serial.println(_reset);
     pinMode(_reset, OUTPUT);
+    digitalWrite(_reset, HIGH);
+    delay(100);
 
     // perform reset
     digitalWrite(_reset, LOW);
-    delay(10);
+    delay(100);
     digitalWrite(_reset, HIGH);
-    delay(10);
+    delay(100);
   }
 
   // start SPI
