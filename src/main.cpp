@@ -164,39 +164,56 @@ void sendHex() {
     Serial.print(F("OTA | SENDING_HEX: ["));
     Serial.print(sourceStr);
     Serial.println(F("]"));
-    manager->sendOta(sourceStr, NODE_ID_TO_SEND, true, true,
-                  []() {
-                      Serial.println(F("OTA | HEX ACK received"));
-                  },
-                  [](String &payload) {
-                      Serial.println(F("OTA | HEX ACK not received"));
-                  });
+
+
+//    manager->sendOta(sourceStr, NODE_ID_TO_SEND, true, true,
+//                  []() {
+//                      Serial.println(F("OTA | HEX ACK received"));
+//                  },
+//                  [](String &payload) {
+//                      Serial.println(F("OTA | HEX ACK not received"));
+//                  });
+
+
+    manager->sendOta(sourceStr, NODE_ID_TO_SEND, false);
+
+
     delay(2000);
 }
 
 void sendHandshake() {
 //    String handshakeStr = "<OTA>FLX?";
     String handshakeStr = "FLX?";
-    manager->sendOta(handshakeStr, NODE_ID_TO_SEND, true, true,
-                  []() {
-                      Serial.println(F("OTA | handshake ACK received"));
-                  },
-                  [](String &payload) {
-                      Serial.println(F("OTA | handshake ACK not received"));
-//                      handshakeReceived = false;
-                  });
+
+
+//    manager->sendOta(handshakeStr, NODE_ID_TO_SEND, true, true,
+//                  []() {
+//                      Serial.println(F("OTA | handshake ACK received"));
+//                  },
+//                  [](String &payload) {
+//                      Serial.println(F("OTA | handshake ACK not received"));
+////                      handshakeReceived = false;
+//                  });
+
+
+    manager->sendOta(handshakeStr, NODE_ID_TO_SEND, false);
 }
 
 void sendEof() {
     String handshakeStr = "EOF?" + String(finalCrc32);
-    manager->sendOta(handshakeStr, NODE_ID_TO_SEND, true, true,
-                  []() {
-                      Serial.println(F("OTA | EOF ACK received"));
-                  },
-                  [](String &payload) {
-                      Serial.println(F("OTA | EOF ACK not received"));
-//                      handshakeReceived = false;
-                  });
+
+
+//    manager->sendOta(handshakeStr, NODE_ID_TO_SEND, true, true,
+//                  []() {
+//                      Serial.println(F("OTA | EOF ACK received"));
+//                  },
+//                  [](String &payload) {
+//                      Serial.println(F("OTA | EOF ACK not received"));
+////                      handshakeReceived = false;
+//                  });
+
+
+    manager->sendOta(handshakeStr, NODE_ID_TO_SEND, false);
 }
 
 void otaDataReceived(String &str, uint8_t senderId) {
@@ -296,7 +313,8 @@ void setupSerial() {
 
 
 void loop() {
-    manager->radioLoop();
+//    serialOta->serialLoop();
+    manager->loop();
 
 //    if (runEvery(2000)) { // repeat every 1000 millis
 //        Serial.println();

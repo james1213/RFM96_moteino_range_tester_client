@@ -167,7 +167,7 @@
 ////        {
 //        unsigned long now2 = millis();
 //        while(!radio.receiveDone() && millis() - now2 < 500) {
-//            radio.radioLoop();
+//            radio.loop();
 //        }
 //        Serial.print(F("RFM95_OTA | HandleWirelessHEXData(), after while(!radio.receiveDone() && millis() - now < 500), radio.SENDERID = "));
 //        Serial.println(radio.SENDERID);
@@ -370,7 +370,7 @@
 ////            if (DEBUG) Serial.print(F("   #inside radio.sendWithRetry "));
 //            unsigned long now2 = millis();
 //            while(!radio.receiveDone() && millis() - now2 < 500) {
-//                radio.radioLoop();
+//                radio.loop();
 //            } //wait for ACK
 ////            if (DEBUG) {
 ////                Serial.print(F("   #after while radio.SENDERID = "));
@@ -563,7 +563,7 @@
 ////            Serial.print(F("   # sendHEXPacket(), inside radio.sendWithRetry"));
 //            unsigned long now2 = millis();
 //            while(!radio.receiveDone() && millis() - now2 < 500) {
-//                radio.radioLoop();
+//                radio.loop();
 //            }
 //            uint8_t ackLen = radio.DATALEN;
 //

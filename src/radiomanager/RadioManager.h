@@ -54,7 +54,7 @@ public:
     virtual void onReceiveDone(int packetSize);
     virtual void onTxDone();
     void LoRa_rxMode();
-    void radioLoop();
+    void loop();
     void sendLoop();
     void receiveLoop();
     String readReceivedData();

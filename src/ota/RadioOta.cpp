@@ -31,7 +31,7 @@ void RadioOta::send(uint16_t toAddress, const void* buffer, uint8_t bufferSize, 
     //czekania aż wyśle (nadejdzie przerwanie TXDone) i zostanie przestawiony na tryb nasłuchu
     uint32_t now = millis();
     while (!manager->isTransmissionFinished() && millis() - now < RF69_CSMA_LIMIT_MS) {
-        manager->radioLoop();
+        manager->loop();
     }
 }
 
@@ -97,7 +97,7 @@ bool RadioOta::receiveDone() {
 //        sentTime = millis();
 //        while (millis() - sentTime < retryWaitTime)
 //        {
-//            manager->radioLoop();
+//            manager->loop();
 //            if (ACKReceived(toAddress)) {
 //                Serial.println(F("RADIO_OTA | sendWithRetry(), ACK RECEIVED"));
 //                return true;
@@ -116,7 +116,7 @@ bool RadioOta::sendWithRetry(uint16_t toAddress, const void* buffer, uint8_t buf
     {
         send(toAddress, buffer, bufferSize, true);
         while (isWaitingForAck()) {
-            manager->radioLoop();
+            manager->loop();
         }
         if (ACKReceived(toAddress)) {
             Serial.print(F("   #RADIO_OTA | sendWithRetry(), ACK RECEIVED"));
@@ -145,5 +145,5 @@ uint32_t RadioOta::getFrequency() {
 }
 
 void RadioOta::radioLoop() {
-    manager->radioLoop();
+    manager->loop();
 }

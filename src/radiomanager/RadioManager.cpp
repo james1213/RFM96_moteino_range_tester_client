@@ -71,7 +71,7 @@ bool RadioManager::isNeedToSendAckToSender(){
     return needToSendAckToSender;
 }
 
-void RadioManager::radioLoop() {
+void RadioManager::loop() {
     sendLoop();
     receiveLoop();
     waitForAckTimeoutLoop();
