@@ -2,7 +2,7 @@
 #include <radiomanager/RadioManager.h>
 #include <SPIFlash.h>
 //#include "arduino_base64.hpp"
-//#include "ota/SerialOta.h"
+#include "ota/SerialOta.h"
 #include "ota/RadioOta.h"
 //#include <CRC32.h>
 
@@ -14,8 +14,8 @@ int count = 0;
 SPIFlash flash(SS_FLASHMEM, 0xEF30); //EF30 for 4mbit  Windbond chip (W25X40CL)
 
 RadioManager *manager = new RadioManager();
-//SerialOta *serialOta = new SerialOta(manager);
 RadioOta *radioOta = new RadioOta(manager);
+SerialOta *serialOta = new SerialOta(manager, radioOta);
 
 boolean runEvery(unsigned long interval);
 
@@ -86,7 +86,7 @@ void setupSerial() {
 
 
 void loop() {
-//    serialOta->loop();
+    serialOta->loop();
     manager->loop();
 
 //    if (runEvery(2000)) { // repeat every 1000 millis

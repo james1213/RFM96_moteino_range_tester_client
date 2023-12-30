@@ -12,6 +12,23 @@
 
 #define NODE_ID_TO_SEND 0x02
 
+enum OtaState {
+    WAITING_FOR_START,
+    SENDING_HANDSHAKE,
+    WAITING_FOR_HANDSHAKE_RESPONSE,
+    HANDSHAKE_RESPONSE_RECEIVED,
+    WAITING_FOR_HEX_DATA_FROM_SERIAL,
+    HANDLING_SERIAL_HEX_DATA,
+    SENDING_HEX,
+    WAITING_FOR_HEX_RESPONSE,
+    HEX_RESPONSE_RECEIVED,
+    SENDING_EOF,
+    WAITING_FOR_EOF_RESPONSE,
+    EOF_RESPONSE_RECEIVED,
+    TRANSMISSION_SUCESS,
+    TRANSMISSION_FAILED
+};
+
 class RadioOta {
 private:
     RadioManager *manager;
@@ -40,20 +57,10 @@ private:
 
     uint32_t finalCrc32 = 0x4A17B156; // TODO obliczać ją rzeczywistą na podstawie odczytu z flasha
 
-    enum OtaState {
-        WAITING_FOR_START,
-        SENDING_HANDSHAKE,
-        WAITING_FOR_HANDSHAKE_RESPONSE,
-        HANDSHAKE_RESPONSE_RECEIVED,
-        SENDING_HEX,
-        WAITING_FOR_HEX_RESPONSE,
-        HEX_RESPONSE_RECEIVED,
-        SENDING_EOF,
-        WAITING_FOR_EOF_RESPONSE,
-        EOF_RESPONSE_RECEIVED
-    };
 
-    OtaState otaState = OtaState(SENDING_HANDSHAKE);
+
+//    OtaState otaState = OtaState(SENDING_HANDSHAKE);
+    OtaState otaState = OtaState(WAITING_FOR_START);
 
 public:
 
@@ -64,6 +71,8 @@ public:
     void sendHandshake();
     void sendEof();
     void otaDataReceived(String &str, uint8_t senderId);
+    void setState(OtaState otaState);
+    OtaState getState();
 };
 
 

@@ -27,7 +27,7 @@ void RadioOta::otaLoop() {
         handshakeTryes = 0;
         hexSendingIndex = 0;
         hexSendTryes = 0;
-        otaState = OtaState(SENDING_HEX);
+        otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
     } else if (otaState == OtaState(SENDING_HEX)) {
         Serial.println(F("OTA | state = SENDING_HEX"));
         hexSendTryes++;
@@ -159,4 +159,12 @@ void RadioOta::otaDataReceived(String &str, uint8_t senderId) {
             Serial.println(F("OTA | EOF response received, but CRC32 is wrong"));
         }
     }
+}
+
+void RadioOta::setState(OtaState otaState) {
+    this->otaState = otaState;
+}
+
+OtaState RadioOta::getState() {
+    return otaState;
 }
