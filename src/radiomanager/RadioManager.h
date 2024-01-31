@@ -49,6 +49,8 @@ public:
     bool sendAckAutomaticly = true; //TODO czyba powinno być na stałe na false, a potem ręcznie wysyłać sendACK
     volatile bool _haveData;
 
+//    int receivedBytes[256];
+
     void onDataReceived(void(*callback)(String &receivedText, uint8_t senderId));
     void onDataSent(void(*callback)());
     virtual void onReceiveDone(int packetSize);
@@ -76,10 +78,11 @@ public:
     bool isHaveDate();
     void setHaveData(bool value);
     bool isTransmissionFinished();
-    void setupRadio(uint8_t _nodeId, void(*onReceiveDoneCallback)(int), void(*onTxDoneCallback)());
+    void setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*onReceiveDoneCallback)(int), void(*onTxDoneCallback)());
     void dumpRegisters();
     void onOtaDataReceived(void (*callback)(String &, uint8_t));
-    bool isOtaPayload(String str);
+    bool isOtaPayload(String &str);
+    bool isDataPayload(String &str);
     int getReceivedPacketSize();
     bool isNeedToSendAckToSender();
 
@@ -96,6 +99,9 @@ public:
     void DEBUGlog(double n, int digits = 2);
     void DEBUGlogln(long n, int base = 10);
     void DEBUGlog(long n, int base = 10);
+
+private:
+    void sendDirectly(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
 };
 
 

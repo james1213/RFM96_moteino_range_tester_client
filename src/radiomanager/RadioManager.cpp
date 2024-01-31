@@ -5,11 +5,12 @@
 #include "RadioManager.h"
 
 
-void RadioManager::setupRadio(uint8_t _nodeId, void(*onReceiveDoneCallback)(int), void(*onTxDoneCallback)()) {
+void RadioManager::setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*onReceiveDoneCallback)(int), void(*onTxDoneCallback)()) {
     nodeId = _nodeId;
     LoRa.enableCrc();
-    LoRa.setPins(10, 7, 2);
-    if (!LoRa.begin(433E6)) {
+//    LoRa.setPins(10, 7, 2);
+    LoRa.setPins(ss, reset, dio0);
+    if (!LoRa.begin(frequency)) {
         DEBUGlogln("LoRa init failed. Check your connections.");
         while (true);                       // if failed, do nothing
     }
@@ -162,10 +163,15 @@ void RadioManager::receiveLoop() {
                 if (otaDataReceivedCallback) {
                     otaDataReceivedCallback(str, senderIdOfLastMessage);
                 }
-            } else {
+            } else if (isDataPayload(str)){
+                DEBUGlogln(F("Received DATA message"));
+                str = str.substring(5);
                 if (dataReceivedCallback) {
                     dataReceivedCallback(str, senderIdOfLastMessage);
                 }
+            } else {
+                DEBUGlog(F("Wrong message format, message: "));
+                DEBUGlogln(str);
             }
         }
     }
@@ -176,14 +182,30 @@ void RadioManager::sendAck() {
     DEBUGlogln(senderIdOfLastMessage);
     String ackString = "!";
     ackString.concat(receivedMessageIdOfLastMessage);
-    send(ackString, senderIdOfLastMessage, false, true, nullptr, nullptr, true);
+    sendDirectly(ackString, senderIdOfLastMessage, false, true, nullptr, nullptr, true);
 }
 
 String RadioManager::readReceivedData() {
     String str = "";
+//    for(int & receivedByte : receivedBytes) {
+//        receivedByte = 0;
+//    }
+//    int index = 0;
     while (LoRa.available()) {
+//        receivedBytes[index] = LoRa.read();
         str += (char) LoRa.read();
+//        str += (char) receivedBytes[index];
+//        index++;
     }
+//    Serial.print(F("readReceivedData, str.length()")); Serial.println(str.length());
+
+//    int receivedBytes[256];
+//    int index = 0;
+//    while (LoRa.available()) {
+//        receivedBytes[index++] = LoRa.read();
+//    }
+//    Serial.print(F("readReceivedData, str.length()")); Serial.println(str.length());
+
 
 //    DEBUGlog(F("BEFORE remove: "));
 //    DEBUGlogln(str);
@@ -294,10 +316,15 @@ void RadioManager::waitForAckTimeoutLoop() {
 
 void RadioManager::sendOta(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
     String strOta = "<OTA>" + str;
-    send(strOta, address, ackRequested, _sendAckAutomaticly, _ackReceivedCallback, _ackNotReceivedCallback, useAckBuffer);
+    sendDirectly(strOta, address, ackRequested, _sendAckAutomaticly, _ackReceivedCallback, _ackNotReceivedCallback, useAckBuffer);
 }
 
 void RadioManager::send(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
+    String strData = "<DAT>" + str;
+    sendDirectly(strData, address, ackRequested, _sendAckAutomaticly, _ackReceivedCallback, _ackNotReceivedCallback, useAckBuffer);
+}
+
+void RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
     sendAckAutomaticly = _sendAckAutomaticly;
     if (ackRequested) {
         ackReceivedCallback = _ackReceivedCallback;
@@ -439,14 +466,27 @@ void RadioManager::onOtaDataReceived(void (*callback)(String &, uint8_t)) {
     otaDataReceivedCallback = callback;
 }
 
-bool RadioManager::isOtaPayload(String str) {
+bool RadioManager::isOtaPayload(String &str) {
     DEBUGlog(F("isOtaPayload, str = "));
     DEBUGlogln(str);
-    const char* data = str.c_str();
 
+    const char* data = str.c_str();
     bool returnValue = data[0] == '<' && data[1] == 'O' && data[2] == 'T' && data[3] == 'A' && data[4] == '>';
+//    bool returnValue = str.startsWith("<OTA>");
 
     DEBUGlog(F("isOtaPayload, returnValue = "));
+    DEBUGlogln(returnValue);
+    return returnValue;
+}
+
+bool RadioManager::isDataPayload(String &str) {
+    DEBUGlog(F("isDataPayload, str = "));
+    DEBUGlogln(str);
+    const char* data = str.c_str();
+    bool returnValue = data[0] == '<' && data[1] == 'D' && data[2] == 'A' && data[3] == 'T' && data[4] == '>';
+//    bool returnValue = str.startsWith("<DAT>");
+
+    DEBUGlog(F("isDataPayload, returnValue = "));
     DEBUGlogln(returnValue);
     return returnValue;
 }

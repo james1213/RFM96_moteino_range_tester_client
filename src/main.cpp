@@ -1,8 +1,8 @@
+//#define digitalPinToInterrupt(p)  ((p) == 10 ? 0 : ((p) == 11 ? 1 : ((p) == 2 ? 2 : NOT_AN_INTERRUPT)))
 #include <Arduino.h>
 #include <radiomanager/RadioManager.h>
 #include <SPIFlash.h>
 //#include "arduino_base64.hpp"
-#include "ota/SerialOta.h"
 #include "ota/RadioOta.h"
 //#include <CRC32.h>
 
@@ -15,7 +15,6 @@ SPIFlash flash(SS_FLASHMEM, 0xEF30); //EF30 for 4mbit  Windbond chip (W25X40CL)
 
 RadioManager *manager = new RadioManager();
 RadioOta *radioOta = new RadioOta(manager);
-SerialOta *serialOta = new SerialOta(manager, radioOta);
 
 boolean runEvery(unsigned long interval);
 
@@ -38,16 +37,16 @@ void setup() {
 
 void setupRadio() {
     manager->onDataReceived(dataReceived);
-//    manager->onOtaDataReceived(otaDataReceived);
+//    manager->onOtaDataReceived(radioOtaDataReceived);
     manager->onOtaDataReceived([](String &str, uint8_t senderId){
-        radioOta->otaDataReceived(str, senderId);
+        radioOta->radioOtaDataReceived(str, senderId);
     });
 
     manager->onDataSent([]() {
 //        Serial.println(F("MAIN | data sent"));
     });
 
-    manager->setupRadio(NODE_ID,
+    manager->setupRadio(433E6, 10, 7, 2, NODE_ID,
                         [](int packetSize) {
                             manager->onReceiveDone(packetSize);
                         },
@@ -86,13 +85,12 @@ void setupSerial() {
 
 
 void loop() {
-    serialOta->loop();
     manager->loop();
 
 //    if (runEvery(2000)) { // repeat every 1000 millis
 //        Serial.println();
 //
-//        String str = "Hello World [#" + String(count++) + "] with ACK";
+//        String str = "Hello World [#" + String(count++) + "] with ACK | test string 1234567890ABCDEFGHIJKLMNOP";
 //        Serial.print(F("Sending payload: \""));
 //        Serial.print(str);
 //        Serial.println(F("\""));
@@ -106,7 +104,7 @@ void loop() {
 //                      });
 //    }
 
-    radioOta->otaLoop();
+    radioOta->loop();
 }
 
 void dataReceived(String &str, uint8_t senderId) {

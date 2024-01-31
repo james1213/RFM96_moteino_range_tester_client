@@ -307,10 +307,13 @@ size_t LoRaClass::write(uint8_t byte)
 size_t LoRaClass::write(const uint8_t *buffer, size_t size)
 {
   int currentLength = readRegister(REG_PAYLOAD_LENGTH);
+//  Serial.print(F("write, currentLength = ")); Serial.println(currentLength);
+//  Serial.print(F("write, size = ")); Serial.println(size);
 
   // check size
   if ((currentLength + size) > MAX_PKT_LENGTH) {
     size = MAX_PKT_LENGTH - currentLength;
+//      Serial.print(F("write, size2 = ")); Serial.println(size);
   }
 
   // write data
