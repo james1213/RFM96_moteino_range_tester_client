@@ -5,7 +5,7 @@
 #include "RadioOta.h"
 
 
-#define DEBUG true
+#define DEBUG false
 
 
 //TODO numerowanie pakietó i sprawdzaniae czy przysZedł kolejny, czy są brakulub powtórzenia
@@ -86,8 +86,6 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
     if (Serial.available()) {
         byte inputLen = readSerialLine(_input, 10, 64, 100);
         if (inputLen > 0) {
-//            Serial.print("Received data from serial: ");
-//            Serial.println(_input);
             boolean configChanged = false;
             char *colon = strchr(_input, ':');
 
@@ -95,52 +93,19 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                 resetEEPROM();
             } else if (strstr(_input, "SETTINGS?") == _input) {
                 printSettings();
-//            } else if (strstr(_input, "NETWORKID:") == _input && strlen(colon + 1) > 0) {
-//                uint8_t newNetId = atoi(++colon); //extract ID from message
-//                if (newNetId <= 255) {
-//                    CONFIG.NETWORKID = newNetId;
-//                    configChanged = true;
-//                } else {
-//                    Serial << F("Invalid networkId:") << newNetId << endl;
-//                }
-            } else if (strstr(_input, "NODEID:") == _input && strlen(colon + 1) > 0) {
+//            } else if (strstr(_input, "TO?") == _input) {
+//                Serial << F("TO:") << targetID << F(":OK") << endl;
+            } else if (strstr(_input, "PROGRAMMERID:") == _input && strlen(colon + 1) > 0) {
                 uint16_t newId = atoi(++colon); //extract ID from message
                 if (newId <= 1023) {
-                    CONFIG.NODEID = newId;
+                    CONFIG.PROGRAMMER_ID = newId;
                     configChanged = true;
                 } else {
                     Serial << F("Invalid nodeId:") << newId << endl;
                 }
-//            } else if (strstr(_input, "FREQUENCY:") == _input && strlen(colon + 1) > 0) {
-//                uint32_t newFreq = atol(++colon); //extract ID from message
-//                if (VALID_FREQUENCY(newFreq)) {
-//                    CONFIG.FREQUENCY = newFreq;
-//                    configChanged = true;
-//                } else {
-//                    Serial << F("Invalid frequency:") << newFreq << endl;
-//                }
-//            } else if (strstr(_input, "ENCRYPTKEY:") == _input) {
-//                if (strlen(colon + 1) == 16) {
-//                    strcpy(CONFIG.ENCRYPTKEY, colon + 1);
-//                    configChanged = true;
-//                } else if (strlen(colon + 1) == 0) {
-//                    strcpy(CONFIG.ENCRYPTKEY, "");
-//                    configChanged = true;
-//                } else
-//                    Serial << F("Invalid encryptkey length:") << colon + 1 << "(" << strlen(colon + 1)
-//                           << F("expected:16)") << endl;
-//            } else if (strstr(_input, "BR300KBPS:") == _input && strlen(colon + 1) > 0) {
-//                uint8_t newBR = atoi(++colon); //extract ID from message
-//                if (newBR == 0 || newBR == 1) {
-//                    CONFIG.BR300KBPS = newBR;
-//                    configChanged = true;
-//                } else {
-//                    Serial << F("Invalid BR300KBPS:") << newBR << endl;
-//                }
-
-//            } else if (inputLen == 4 && strstr(_input, "FLX?") == _input) {
-            } else if (inputLen == 4 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?') {
+            } else if (inputLen > 7 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'T' && _input[5] == 'O' && _input[6] == '?') {
                 if (otaState == OtaState(WAITING_FOR_SERIAL_HANDSHAKE)) {
+                    targetID = String(_input).substring(7).toInt();
                     otaState = (OtaState(SENDING_WIRELESS_HANDSHAKE));
                 }
             } else if (inputLen > 8 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'H' && _input[5] == 'E' && _input[6] == 'X' && _input[7] == '?') {
@@ -152,69 +117,41 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                 }
             } else if (inputLen > 8 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'E' && _input[5] == 'O' && _input[6] == 'F' && _input[7] == '?') {
                 if (otaState == OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL)) {
-//                    finalCrc32 = atol(String(_input).substring(8).c_str());
                     finalCrc32 = String(_input).substring(8).toInt();
                     otaState = OtaState(SENDING_WIRELESS_EOF);
                 }
-            } else if (strstr(_input, "TO:") == _input && strlen(colon + 1) > 0) {
-                uint16_t newTarget = atoi(++colon);
-                if (newTarget > 0 && newTarget <= 1023) {
-                    targetID = newTarget;
-                    Serial << F("TO:") << targetID << F(":OK") << endl;
-                } else Serial << _input << F(":INV") << endl;
+//            } else if (strstr(_input, "TO:") == _input && strlen(colon + 1) > 0) {
+//                uint16_t newTarget = atoi(++colon);
+//                if (newTarget > 0 && newTarget <= 255 && newTarget != CONFIG.PROGRAMMER_ID) {
+//                    targetID = newTarget;
+//                    Serial << F("TO:") << targetID << F(":OK") << endl;
+//                } else Serial << _input << F(":INV") << endl;
             } else Serial << F("UNKNOWN_CMD: ") << _input << (F(", state = ")) << otaState << endl; //echo back un
 
             if (configChanged) {
                 EEPROM.writeBlock(0, CONFIG); //save changes to EEPROM
                 printSettings();
-//                initRadio();
             }
         }
     }
 
 }
 
-//TODO to powinno być przepisane do Javy na apce w kompie
-//void RadioOta::radioSendHex() {
-//    auto inputLength = sizeof(source[hexSendingIndex]);
-//    char output[base64::encodeLength(inputLength)];
-//    base64::encode(source[hexSendingIndex], inputLength, output);
-//
-//    Serial.println(F("OTA | Calculating checksum"));
-//    String sourceStr = String(output);
-//    Serial.print(F("OTA | sourceStr = "));
-//    Serial.println(sourceStr);
-//    uint32_t checksum = CRC32::calculate(sourceStr.c_str(), sourceStr.length());
-//    Serial.print(F("OTA | checksum = "));
-//    Serial.println(checksum);
-//    sourceStr += "?" + String(checksum);
-//    Serial.print(F("OTA | sourceStr+checksum "));
-//    Serial.println(sourceStr);
-//
-//    Serial.print(F("OTA | SENDING_WIRELESS_HEX: ["));
-//    Serial.print(sourceStr);
-//    Serial.println(F("]"));
-//
-//    manager->sendOta(sourceStr, NODE_ID_TO_SEND, false);
-//
-//    delay(2000);
-//}
-
 void RadioOta::radioSendHexFromSerial() {
     if (DEBUG) Serial.print(F("OTA | radioSendHexFromSerial(), data = "));
     String dataToSend = "FLX?DAT?" + serialReceivedBuffer;
     if (DEBUG) Serial.println(dataToSend);
-    manager->sendOta(dataToSend, NODE_ID_TO_SEND, false);
+    manager->sendOta(dataToSend, targetID);
 }
 
 void RadioOta::radioSendHandshake() {
     String handshakeStr = "FLX?";
-    manager->sendOta(handshakeStr, NODE_ID_TO_SEND, false);
+    manager->sendOta(handshakeStr, targetID);
 }
 
 void RadioOta::radioSendEof() {
     String handshakeStr = "FLX?EOF?" + String(finalCrc32);
-    manager->sendOta(handshakeStr, NODE_ID_TO_SEND, false);
+    manager->sendOta(handshakeStr, targetID);
 }
 
 RadioOta::RadioOta(RadioManager *manager) {
@@ -298,29 +235,14 @@ uint8_t RadioOta::readSerialLine(char *input, char endOfLineChar, uint8_t maxLen
     return inputLen;
 }
 
-boolean RadioOta::resetEEPROMCondition() {
-    //conditions for resetting EEPROM:
-    return CONFIG.NETWORKID > 255 ||
-           CONFIG.NODEID > 1023 ||
-           !VALID_FREQUENCY(CONFIG.FREQUENCY);
-}
-
 void RadioOta::resetEEPROM() {
     Serial.println("Resetting EEPROM to default values...");
-    CONFIG.NETWORKID = NETWORKID_DEFAULT;
-    CONFIG.NODEID = NODEID_DEFAULT;
-    CONFIG.FREQUENCY = FREQUENCY_DEFAULT;
-    CONFIG.BR300KBPS = false;
-    strcpy(CONFIG.ENCRYPTKEY, ENCRYPTKEY_DEFAULT);
+    CONFIG.PROGRAMMER_ID = PROGRAMMERID_DEFAULT;
     EEPROM.writeBlock(0, CONFIG);
 }
 
 void RadioOta::printSettings() {
-    Serial << endl << F("NETWORKID:") << CONFIG.NETWORKID << endl;
-    Serial << F("NODEID:") << CONFIG.NODEID << endl;
-    Serial << F("FREQUENCY:") << CONFIG.FREQUENCY << endl;
-    Serial << F("BR300KBPS:") << CONFIG.BR300KBPS << endl;
-    Serial << F("ENCRYPTKEY:") << CONFIG.ENCRYPTKEY << endl;
+    Serial << endl << F("PROGRAMMERID:") << CONFIG.PROGRAMMER_ID << endl;
 }
 
 void RadioOta::Blink(int DELAY_MS) {
@@ -328,10 +250,6 @@ void RadioOta::Blink(int DELAY_MS) {
     delay(DELAY_MS);
     digitalWrite(LED_BUILTIN, LOW);
 }
-
-
-
-
 
 void RadioOta::resetStateAndValues() {
     handshakeTryes = 0;

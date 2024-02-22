@@ -53,8 +53,8 @@ public:
 
     void onDataReceived(void(*callback)(String &receivedText, uint8_t senderId));
     void onDataSent(void(*callback)());
-    virtual void onReceiveDone(int packetSize);
-    virtual void onTxDone();
+    virtual void receiveDone(int packetSize);
+    virtual void txDone();
     void LoRa_rxMode();
     void loop();
     void sendLoop();
@@ -65,8 +65,8 @@ public:
     bool isAckPayload(String str);
     bool isAckPayloadAndValidMessageId(String str);
     void waitForAckTimeoutLoop();
-    void sendOta(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
-    void send(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
+    void sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
+    void send(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     void startSending(String &str, uint8_t address);
     void LoRa_sendMessage(String message);
     void LoRa_txMode();
@@ -78,13 +78,14 @@ public:
     bool isHaveDate();
     void setHaveData(bool value);
     bool isTransmissionFinished();
-    void setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*onReceiveDoneCallback)(int), void(*onTxDoneCallback)());
+    void setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*receiveDoneCallback)(int), void(*txDoneCallback)());
     void dumpRegisters();
     void onOtaDataReceived(void (*callback)(String &, uint8_t));
     bool isOtaPayload(String &str);
     bool isDataPayload(String &str);
     int getReceivedPacketSize();
     bool isNeedToSendAckToSender();
+    bool isDataSent();
 
     void DEBUGlogln(const __FlashStringHelper *ifsh);
     void DEBUGlog(const __FlashStringHelper *ifsh);
@@ -101,7 +102,7 @@ public:
     void DEBUGlog(long n, int base = 10);
 
 private:
-    void sendDirectly(String &str, uint8_t address, bool ackRequested= false, bool _sendAckAutomaticly= true, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
+    void sendDirectly(String &str, uint8_t address, bool ackRequested= false, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
 };
 
 

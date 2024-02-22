@@ -48,10 +48,10 @@ void setupRadio() {
 
     manager->setupRadio(433E6, 10, 7, 2, NODE_ID,
                         [](int packetSize) {
-                            manager->onReceiveDone(packetSize);
+                            manager->receiveDone(packetSize);
                         },
                         []() {
-                            manager->onTxDone();
+                            manager->txDone();
                         });
 
     manager->dumpRegisters();
@@ -94,7 +94,7 @@ void loop() {
 //        Serial.print(F("Sending payload: \""));
 //        Serial.print(str);
 //        Serial.println(F("\""));
-//        manager->send(str, NODE_ID_TO_SEND, true, true,
+//        manager->send(str, 2,
 //                      []() {
 //                          Serial.println(F("MAIN | OK"));
 //                      },

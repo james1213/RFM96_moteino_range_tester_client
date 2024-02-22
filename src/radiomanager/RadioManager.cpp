@@ -5,8 +5,10 @@
 #include "RadioManager.h"
 
 
-void RadioManager::setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*onReceiveDoneCallback)(int), void(*onTxDoneCallback)()) {
+void RadioManager::setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*receiveDoneCallback)(int), void(*txDoneCallback)()) {
     nodeId = _nodeId;
+    LoRa.onReceive(receiveDoneCallback);
+    LoRa.onTxDone(txDoneCallback);
     LoRa.enableCrc();
 //    LoRa.setPins(10, 7, 2);
     LoRa.setPins(ss, reset, dio0);
@@ -23,8 +25,6 @@ void RadioManager::setupRadio(long frequency, int ss, int reset, int dio0, uint8
     DEBUGlogln("Rx: invertIQ enable");
     DEBUGlogln();
 
-    LoRa.onReceive(onReceiveDoneCallback);
-    LoRa.onTxDone(onTxDoneCallback);
     LoRa_rxMode();
 }
 
@@ -38,10 +38,6 @@ void RadioManager::onDataSent(void(*callback)()) {
 
 int RadioManager::getReceivedPacketSize() {
     return receivedPacketSize;
-}
-
-void RadioManager::setSendAckAutomaticly(bool value) {
-    sendAckAutomaticly = value;
 }
 
 bool RadioManager::isAckReceived() {
@@ -146,9 +142,7 @@ void RadioManager::receiveLoop() {
                 DEBUGlogln(!isAckPayload(str));
                 DEBUGlog(F("RadioManager | needToSendAckToSender = "));
                 DEBUGlogln(needToSendAckToSender);
-                DEBUGlog(F("RadioManager | sendAckAutomaticly = "));
-                DEBUGlogln(sendAckAutomaticly);
-                if (!isAckPayload(str) && needToSendAckToSender && sendAckAutomaticly) {
+                if (!isAckPayload(str) && needToSendAckToSender) {
                     DEBUGlogln(F("RadioManager | inside: !isAckPayload(str) && needToSendAckToSender && sendAckAutomaticly"));
                     sendAck();
                 }
@@ -182,7 +176,7 @@ void RadioManager::sendAck() {
     DEBUGlogln(senderIdOfLastMessage);
     String ackString = "!";
     ackString.concat(receivedMessageIdOfLastMessage);
-    sendDirectly(ackString, senderIdOfLastMessage, false, true, nullptr, nullptr, true);
+    sendDirectly(ackString, senderIdOfLastMessage, false, nullptr, nullptr, true);
 }
 
 String RadioManager::readReceivedData() {
@@ -314,18 +308,17 @@ void RadioManager::waitForAckTimeoutLoop() {
     }
 }
 
-void RadioManager::sendOta(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
+void RadioManager::sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
     String strOta = "<OTA>" + str;
-    sendDirectly(strOta, address, ackRequested, _sendAckAutomaticly, _ackReceivedCallback, _ackNotReceivedCallback, useAckBuffer);
+    sendDirectly(strOta, address, _ackReceivedCallback || _ackNotReceivedCallback, _ackReceivedCallback, _ackNotReceivedCallback, false);
 }
 
-void RadioManager::send(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
+void RadioManager::send(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
     String strData = "<DAT>" + str;
-    sendDirectly(strData, address, ackRequested, _sendAckAutomaticly, _ackReceivedCallback, _ackNotReceivedCallback, useAckBuffer);
+    sendDirectly(strData, address, _ackReceivedCallback || _ackNotReceivedCallback, _ackReceivedCallback, _ackNotReceivedCallback, false);
 }
 
-void RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested, bool _sendAckAutomaticly, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
-    sendAckAutomaticly = _sendAckAutomaticly;
+void RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
     if (ackRequested) {
         ackReceivedCallback = _ackReceivedCallback;
         ackNotReceivedCallback = _ackNotReceivedCallback;
@@ -376,7 +369,7 @@ void RadioManager::LoRa_txMode() {
 //    LoRa.disableInvertIQ();               // node
 }
 
-void RadioManager::onReceiveDone(int packetSize) {
+void RadioManager::receiveDone(int packetSize) {
     if (packetSize > 0) {
         receivedFlag = true;
         receivedPacketSize = packetSize;
@@ -386,7 +379,7 @@ void RadioManager::onReceiveDone(int packetSize) {
     }
 }
 
-void RadioManager::onTxDone() {
+void RadioManager::txDone() {
     LoRa_rxMode();
     transmissionFinished = true;
     DEBUGlogln(F("Send interrupt"));
@@ -489,4 +482,8 @@ bool RadioManager::isDataPayload(String &str) {
     DEBUGlog(F("isDataPayload, returnValue = "));
     DEBUGlogln(returnValue);
     return returnValue;
+}
+
+bool RadioManager::isDataSent() {
+    return transmissionFinished;
 }

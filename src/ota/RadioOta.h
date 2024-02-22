@@ -19,16 +19,8 @@
 
 
 
-#define NODE_ID_TO_SEND 0x02
-
-
 ///////////////////////////////Serial
-#define NODEID_DEFAULT     1023
-#define NETWORKID_DEFAULT  100
-#define FREQUENCY_DEFAULT  433000000
-//#define FREQUENCY_DEFAULT  915000000
-#define VALID_FREQUENCY(freq) ((freq >= 430000000 && freq <= 435000000) || (freq >= 860000000 && freq <= 870000000) || (freq >= 902000000 && freq <= 928000000))
-#define ENCRYPTKEY_DEFAULT ""
+#define PROGRAMMERID_DEFAULT     255
 //*********************************************************************************************
 #define DEBUG_MODE  true  //'true' = verbose output from programming sequence, ~12% slower OTA!
 #define SERIAL_BAUD 115200
@@ -105,11 +97,7 @@ private:
 
     /////////////////////////////////
     struct config {
-        uint8_t NETWORKID;
-        uint16_t NODEID;
-        uint32_t FREQUENCY;
-        uint8_t BR300KBPS;
-        char ENCRYPTKEY[17]; //16+nullptr
+        uint16_t PROGRAMMER_ID;
     } CONFIG;
 
     char _input[128];
