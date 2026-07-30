@@ -12,7 +12,7 @@
 
 
 
-#define LOG_ACTIVE false
+#define LOG_ACTIVE true
 
 
 class RadioManager {

@@ -58,6 +58,7 @@ void setupRadio() {
 }
 
 void setupFlash() {
+    Serial.println("CLIENT");
     Serial.println(F("[FLASH] Setup started"));
     if (flash.initialize()) {
         Serial.println(F("[FLASH] SPI Flash Init OK"));
@@ -87,22 +88,22 @@ void setupSerial() {
 void loop() {
     manager->loop();
 
-//    if (runEvery(2000)) { // repeat every 1000 millis
-//        Serial.println();
-//
-//        String str = "Hello World [#" + String(count++) + "] with ACK | test string 1234567890ABCDEFGHIJKLMNOP";
-//        Serial.print(F("Sending payload: \""));
-//        Serial.print(str);
-//        Serial.println(F("\""));
-//        manager->send(str, 2,
-//                      []() {
-//                          Serial.println(F("MAIN | OK"));
-//                      },
-//                      [](String &payload) {
-//                          Serial.print(F("MAIN | NOT OK, payload = "));
-//                          Serial.println(payload);
-//                      });
-//    }
+    if (runEvery(2000)) { // repeat every 1000 millis
+        Serial.println();
+
+        String str = "Hello World [#" + String(count++) + "] with ACK | test string 1234567890ABCDEFGHIJKLMNOP";
+        Serial.print(F("Sending payload: \""));
+        Serial.print(str);
+        Serial.println(F("\""));
+        manager->send(str, 2,
+                      []() {
+                          Serial.println(F("MAIN | OK"));
+                      },
+                      [](String &payload) {
+                          Serial.print(F("MAIN | NOT OK, payload = "));
+                          Serial.println(payload);
+                      });
+    }
 
     radioOta->loop();
 }
