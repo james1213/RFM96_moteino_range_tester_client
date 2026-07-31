@@ -67,6 +67,20 @@ void RadioManager::loop() {
     sendLoop();
     receiveLoop();
     waitForAckTimeoutLoop();
+    txStuckWatchdogLoop();
+}
+
+// Awaryjne odblokowanie nadajnika: gdyby przerwanie TxDone przepadlo (wyscig w
+// bibliotece przy async endPacket), transmissionFinished nigdy nie wroci na true,
+// sendBuffer nie zostalby oprozniony i kazda kolejna wysylka bylaby odrzucana
+// w nieskonczonosc. Po timeoucie wymuszamy powrot do RX i domkniecie cyklu.
+void RadioManager::txStuckWatchdogLoop() {
+    if (!transmissionFinished && millis() - txStartMillis > txStuckTimeout) {
+        DEBUGlogln(F("[RFM96] TX stuck - forcing RX mode"));
+        LoRa_rxMode();
+        txDoneTime = micros();
+        transmissionFinished = true;
+    }
 }
 
 void RadioManager::sendLoop() {
@@ -327,23 +341,32 @@ void RadioManager::waitForAckTimeoutLoop() {
     }
 }
 
-void RadioManager::sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
+bool RadioManager::sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
     String strOta = "<OTA>" + str;
-    sendDirectly(strOta, address, _ackReceivedCallback || _ackNotReceivedCallback, _ackReceivedCallback, _ackNotReceivedCallback, false);
+    return sendDirectly(strOta, address, _ackReceivedCallback || _ackNotReceivedCallback, _ackReceivedCallback, _ackNotReceivedCallback, false);
 }
 
-void RadioManager::send(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
+bool RadioManager::send(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
     String strData = "<DAT>" + str;
-    sendDirectly(strData, address, _ackReceivedCallback || _ackNotReceivedCallback, _ackReceivedCallback, _ackNotReceivedCallback, false);
+    return sendDirectly(strData, address, _ackReceivedCallback || _ackNotReceivedCallback, _ackReceivedCallback, _ackNotReceivedCallback, false);
 }
 
-void RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
-    if (ackRequested) {
-        if (waitingForAck && ackNotReceivedCallback) {
-            // poprzednia wiadomosc wciaz czekala na ACK - powiadom aplikacje, ze przepada
-            waitingForAck = false;
-            ackNotReceivedCallback(ackCallback_paylod);
+// Zwraca false gdy radio jest zajete (wiadomosc czeka w buforze na wyslanie albo
+// poprzednia transakcja ACK jest w toku) - wtedy NIC nie jest nadpisywane i nalezy
+// ponowic wysylke pozniej. Ciche nadpisywanie bufora gubilo ramki OTA, gdy ruch
+// testowy i transfer OTA dzialaly rownoczesnie.
+bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
+    if (!useAckBuffer) {
+        if (sendBuffer.length() > 0) {
+            DEBUGlogln(F("RadioManager | busy: sendBuffer occupied"));
+            return false;
         }
+        if (ackRequested && waitingForAck) {
+            DEBUGlogln(F("RadioManager | busy: waiting for ACK"));
+            return false;
+        }
+    }
+    if (ackRequested) {
         ackReceivedCallback = _ackReceivedCallback;
         ackNotReceivedCallback = _ackNotReceivedCallback;
         ackCallback_paylod = str;
@@ -352,7 +375,7 @@ void RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
         waitForAckStartTime = millis();
     }
     if (useAckBuffer) {
-        ackSendBuffer = str;
+        ackSendBuffer = str; // ACK moze nadpisac starszy ACK - nadawca i tak ponowi
         ackSendBufferDest = address;
     } else {
         sendBuffer = str;
@@ -361,6 +384,7 @@ void RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
     }
     if (messageId == 0) messageId = 1;
     sendLoop();
+    return true;
 }
 
 void RadioManager::startSending(String &str, uint8_t address, bool ackRequested) {
@@ -388,6 +412,7 @@ void RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
     DEBUGlog(frame);
     DEBUGlogln(F("]"));
     sendingTime = micros();
+    txStartMillis = millis();
     LoRa_sendMessage(frame);
     if (LOG_ACTIVE) {
         DEBUGlog(F("radio.startTransmit() time: "));

@@ -13,20 +13,21 @@
 
 void RadioOta::loop() {
 if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
-        Serial.println(F("OTA | state = SENDING_WIRELESS_HANDSHAKE"));
-        handshakeTryes++;
         if (handshakeTryes >= HANDSHAKE_SENDING_TRYES_LIMIT) {
             Serial.println(F("FLX?HANDSHAKE?TIMEOUT"));
             resetStateAndValues();
             Serial.println(F("OTA | Handshake response not received, retries number exceeded. Not sending again"));
-        } else {
-            radioSendHandshake();
+        } else if (radioSendHandshake()) { // false = radio zajete, ponow w nastepnym obiegu petli
+            Serial.println(F("OTA | state = SENDING_WIRELESS_HANDSHAKE"));
+            handshakeTryes++;
             handshakeSendStartTime = millis();
             Serial.println(F("OTA | going to WAITING_FOR_WIRELESS_HANDSHAKE_RESPONSE state"));
             otaState = OtaState(WAITING_FOR_WIRELESS_HANDSHAKE_RESPONSE);
         }
     } else if (otaState == OtaState(WAITING_FOR_WIRELESS_HANDSHAKE_RESPONSE)) {
-        if (millis() - handshakeSendStartTime > 1000) {
+        // jitter 0-255 ms: obie strony ponawiaja co ~1 s, bez jittera raz zderzone
+        // retransmisje kolidowalyby ze soba w rytmie az do wyczerpania prob
+        if (millis() - handshakeSendStartTime > 1000 + (micros() & 0xFF)) {
             otaState = OtaState(SENDING_WIRELESS_HANDSHAKE);
             Serial.println(F("OTA | Trying to send handshake again"));
         }
@@ -43,15 +44,14 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
             Serial.println(F("OTA | Hex from serial not received, timeout reached. Not waiting anymore"));
         }
     } else if (otaState == OtaState(SENDING_WIRELESS_HEX)) {
-        if (DEBUG) Serial.println(F("OTA | state = SENDING_WIRELESS_HEX"));
-        hexSendTryes++;
         if (hexSendTryes >= HEX_SENDING_TRYES_LIMIT) {
             Serial.println(F("FLX?HEX?WIRELESS_TIMEOUT"));
             resetStateAndValues();
             Serial.println(F("OTA | FLASH IMG TRANSMISSION FAIL"));
             Serial.println(F("OTA | Handshake response not received, retries number exceeded. Not sending again"));
-        } else {
-            radioSendHexFromSerial();
+        } else if (radioSendHexFromSerial()) { // false = radio zajete, ponow w nastepnym obiegu petli
+            if (DEBUG) Serial.println(F("OTA | state = SENDING_WIRELESS_HEX"));
+            hexSendTryes++;
             hexSendStartTime = millis();
             if (DEBUG) Serial.println(F("OTA | going to WAITING_FOR_WIRELESS_HEX_RESPONSE state"));
             otaState = OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE);
@@ -62,15 +62,14 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
             Serial.println(F("OTA | Trying to send hex again"));
         }
     } else if (otaState == OtaState(SENDING_WIRELESS_EOF)) {
-        Serial.println(F("OTA | state = SENDING_WIRELESS_EOF"));
-        eofSendTryes++;
         if (eofSendTryes >= EOF_SENDING_TRYES_LIMIT) {
             Serial.println(F("FLX?EOF?WIRELESS_TIMEOUT"));
             resetStateAndValues();
             Serial.println(F("OTA | FLASH IMG TRANSMISSION FAIL"));
             Serial.println(F("OTA | EOF response not received, retries number exceeded. Not sending again"));
-        } else {
-            radioSendEof();
+        } else if (radioSendEof()) { // false = radio zajete, ponow w nastepnym obiegu petli
+            Serial.println(F("OTA | state = SENDING_WIRELESS_EOF"));
+            eofSendTryes++;
             eofSendStartTime = millis();
             Serial.println(F("OTA | going to WAITING_FOR_WIRELESS_EOF_RESPONSE state"));
             otaState = OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE);
@@ -137,25 +136,30 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
 
 }
 
-void RadioOta::radioSendHexFromSerial() {
+bool RadioOta::radioSendHexFromSerial() {
     if (DEBUG) Serial.print(F("OTA | radioSendHexFromSerial(), data = "));
     String dataToSend = "FLX?DAT?" + serialReceivedBuffer;
     if (DEBUG) Serial.println(dataToSend);
-    manager->sendOta(dataToSend, targetID);
+    return manager->sendOta(dataToSend, targetID);
 }
 
-void RadioOta::radioSendHandshake() {
+bool RadioOta::radioSendHandshake() {
     String handshakeStr = "FLX?";
-    manager->sendOta(handshakeStr, targetID);
+    return manager->sendOta(handshakeStr, targetID);
 }
 
-void RadioOta::radioSendEof() {
+bool RadioOta::radioSendEof() {
     String handshakeStr = "FLX?EOF?" + String(finalCrc32);
-    manager->sendOta(handshakeStr, targetID);
+    return manager->sendOta(handshakeStr, targetID);
 }
 
 RadioOta::RadioOta(RadioManager *manager) {
     this->manager = manager;
+}
+
+// true = trwa transfer OTA; na ten czas wstrzymujemy ruch testowy z loop()
+bool RadioOta::isOtaInProgress() {
+    return otaState != OtaState(WAITING_FOR_SERIAL_HANDSHAKE);
 }
 
 void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
@@ -171,13 +175,18 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
     String eofOkResponse = "FLX?EOF?OK";
     String eofErrResponse = "FLX?EOF?ERR";
 
+    // Odpowiedzi akceptujemy takze w stanach SENDING_* (tuz po timeoucie okna):
+    // spozniona odpowiedz jest nadal wazna, a odbiornik dostal juz radiowy auto-ACK
+    // i przeszedl dalej - odrzucenie jej tutaj rozsynchronizowaloby oba wezly.
     if (str.equals(handshakeResponse)) {
-        if (otaState == OtaState(WAITING_FOR_WIRELESS_HANDSHAKE_RESPONSE)) {
+        if (otaState == OtaState(WAITING_FOR_WIRELESS_HANDSHAKE_RESPONSE)
+            || otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
             otaState = OtaState(WIRELESS_HANDSHAKE_RESPONSE_RECEIVED);
             Serial.println(F("OTA | Handshake response received"));
         }
     } else if (str.equals(hexOkResponse)) {
-        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)) {
+        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
+            || otaState == OtaState(SENDING_WIRELESS_HEX)) {
             hexSendTryes = 0;
             Serial.println(F("FLX?HEX?OK"));
             hexDataFromSerialStartTime = millis();
@@ -185,14 +194,16 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
             if (DEBUG) Serial.println(F("OTA | HEX response received"));
         }
     } else if (str.equals(eofOkResponse)) {
-        if (otaState == OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE)) {
+        if (otaState == OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE)
+            || otaState == OtaState(SENDING_WIRELESS_EOF)) {
             Serial.println(F("FLX?EOF?OK"));
             Serial.println(F("FLASH IMG TRANSMISSION SUCCESS"));
             resetStateAndValues();
             Serial.println(F("OTA | EOF response received"));
         }
     } else if (str.equals(hexErrResponse)) {
-        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)) {
+        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
+            || otaState == OtaState(SENDING_WIRELESS_HEX)) {
             hexSendTryes = 0;
             Serial.println(F("FLX?HEX?ERR"));
             hexDataFromSerialStartTime = millis();
@@ -200,7 +211,8 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
             Serial.println(F("OTA | HEX response received, but CRC32 is wrong"));
         }
     } else if (str.startsWith(hexWrongNumResponse)) {
-        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)) {
+        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
+            || otaState == OtaState(SENDING_WIRELESS_HEX)) {
             hexSendTryes = 0;
 //            Serial.println(F("FLX?HEX?WRONG_NUM"));
             Serial.println(str);
@@ -209,7 +221,8 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
             Serial.println(F("OTA | HEX response received, but it has wrong number"));
         }
     } else if (str.equals(eofErrResponse)) {
-        if (otaState == OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE)) {
+        if (otaState == OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE)
+            || otaState == OtaState(SENDING_WIRELESS_EOF)) {
             Serial.println(F("FLX?EOF?ERR"));
             Serial.println(F("FLASH IMG TRANSMISSION FAIL"));
             resetStateAndValues();

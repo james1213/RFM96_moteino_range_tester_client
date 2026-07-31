@@ -128,9 +128,10 @@ public:
     RadioOta(RadioManager *manager);
 
     void loop();
+    bool isOtaInProgress();
 //    void radioSendHex();
-    void radioSendHandshake();
-    void radioSendEof();
+    bool radioSendHandshake();
+    bool radioSendEof();
     void radioOtaDataReceived(String &str, uint8_t senderId);
 
     ///////////////////////////////////////////////
@@ -140,7 +141,7 @@ public:
 
     bool isHexEofMessage(String &str);
 
-    void radioSendHexFromSerial();
+    bool radioSendHexFromSerial();
 };
 
 

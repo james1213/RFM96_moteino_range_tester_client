@@ -131,7 +131,10 @@ void setupSerial() {
 void loop() {
     manager->loop();
 
-    // if (runEvery(2000)) { // repeat every 1000 millis
+    // Ruch testowy: wstrzymany, gdy trwa transfer OTA (isOtaInProgress), a gdy radio
+    // jest chwilowo zajete (send() zwraca false), wiadomosc jest po prostu pomijana -
+    // send() NIE nadpisuje juz po cichu zakolejkowanej ramki.
+    // if (!radioOta->isOtaInProgress() && runEvery(2000)) {
     //     Serial.println();
     //
     //     String str;
@@ -142,7 +145,7 @@ void loop() {
     //     Serial.print(F("Sending payload: \""));
     //     Serial.print(str);
     //     Serial.println(F("\""));
-    //     manager->send(str, 2,
+    //     bool queued = manager->send(str, 2,
     //                   []() {
     //                       Serial.println(F("MAIN | OK"));
     //                   },
@@ -150,6 +153,7 @@ void loop() {
     //                       Serial.print(F("MAIN | NOT OK, payload = "));
     //                       Serial.println(payload);
     //                   });
+    //     if (!queued) Serial.println(F("MAIN | radio busy, skipped"));
     // }
 
     radioOta->loop();

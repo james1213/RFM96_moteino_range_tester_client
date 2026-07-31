@@ -32,6 +32,8 @@ public:
     volatile bool zeroLengthPacketReceived = false;
     unsigned long sendingTime = 0;
     volatile unsigned long txDoneTime = 0;
+    unsigned long txStartMillis = 0;
+    unsigned long txStuckTimeout = 2000; // ms; >> najdluzszy czas ramki w powietrzu
     volatile bool transmissionClenedUp = true;
     volatile bool ackReceived = false;
     bool waitingForAck = false;
@@ -79,8 +81,9 @@ public:
     bool isAckPayload(const String &str);
     bool isAckPayloadAndValidMessageId(String str);
     void waitForAckTimeoutLoop();
-    void sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
-    void send(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
+    void txStuckWatchdogLoop();
+    bool sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
+    bool send(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     void startSending(String &str, uint8_t address, bool ackRequested);
     void LoRa_sendMessage(const String &message);
     void LoRa_txMode();
@@ -120,7 +123,7 @@ public:
     void DEBUGlog(long n, int base = 10);
 
 private:
-    void sendDirectly(String &str, uint8_t address, bool ackRequested= false, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
+    bool sendDirectly(String &str, uint8_t address, bool ackRequested= false, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
 };
 
 
