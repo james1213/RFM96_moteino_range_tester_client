@@ -107,11 +107,9 @@ int LoRaClass::begin(long frequency)
   digitalWrite(_ss, HIGH);
 
   if (_reset != -1) {
-      Serial.print("LoRaClass::begin: _reset =");
-      Serial.println(_reset);
     pinMode(_reset, OUTPUT);
-    digitalWrite(_reset, HIGH);
-    delay(100);
+      digitalWrite(_reset, HIGH);
+      delay(100);
 
     // perform reset
     digitalWrite(_reset, LOW);
@@ -307,13 +305,10 @@ size_t LoRaClass::write(uint8_t byte)
 size_t LoRaClass::write(const uint8_t *buffer, size_t size)
 {
   int currentLength = readRegister(REG_PAYLOAD_LENGTH);
-//  Serial.print(F("write, currentLength = ")); Serial.println(currentLength);
-//  Serial.print(F("write, size = ")); Serial.println(size);
 
   // check size
   if ((currentLength + size) > MAX_PKT_LENGTH) {
     size = MAX_PKT_LENGTH - currentLength;
-//      Serial.print(F("write, size2 = ")); Serial.println(size);
   }
 
   // write data
@@ -375,10 +370,8 @@ void LoRaClass::onReceive(void(*callback)(int))
 #ifdef SPI_HAS_NOTUSINGINTERRUPT
     SPI.usingInterrupt(digitalPinToInterrupt(_dio0));
 #endif
-      Serial.println("onReceive, attachInterrupt");
     attachInterrupt(digitalPinToInterrupt(_dio0), LoRaClass::onDio0Rise, RISING);
   } else {
-      Serial.println("onReceive, detachInterrupt");
     detachInterrupt(digitalPinToInterrupt(_dio0));
 #ifdef SPI_HAS_NOTUSINGINTERRUPT
     SPI.notUsingInterrupt(digitalPinToInterrupt(_dio0));
@@ -395,10 +388,8 @@ void LoRaClass::onTxDone(void(*callback)())
 #ifdef SPI_HAS_NOTUSINGINTERRUPT
     SPI.usingInterrupt(digitalPinToInterrupt(_dio0));
 #endif
-      Serial.println("onTxDone, attachInterrupt");
     attachInterrupt(digitalPinToInterrupt(_dio0), LoRaClass::onDio0Rise, RISING);
   } else {
-      Serial.println("onTxDone, detachInterrupt");
     detachInterrupt(digitalPinToInterrupt(_dio0));
 #ifdef SPI_HAS_NOTUSINGINTERRUPT
     SPI.notUsingInterrupt(digitalPinToInterrupt(_dio0));
@@ -702,16 +693,14 @@ void LoRaClass::implicitHeaderMode()
 
 void LoRaClass::handleDio0Rise()
 {
-    Serial.println("LORA INTERRUPT");
   int irqFlags = readRegister(REG_IRQ_FLAGS);
 
   // clear IRQ's
   writeRegister(REG_IRQ_FLAGS, irqFlags);
 
   if ((irqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK) == 0) {
-      Serial.println("(irqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK) == 0");
+
     if ((irqFlags & IRQ_RX_DONE_MASK) != 0) {
-        Serial.println("(irqFlags & IRQ_RX_DONE_MASK) != 0");
       // received a packet
       _packetIndex = 0;
 
@@ -722,25 +711,14 @@ void LoRaClass::handleDio0Rise()
       writeRegister(REG_FIFO_ADDR_PTR, readRegister(REG_FIFO_RX_CURRENT_ADDR));
 
       if (_onReceive) {
-          Serial.println("_onReceive()");
         _onReceive(packetLength);
-      } else {
-            Serial.println("not _onReceive");
       }
     }
     else if ((irqFlags & IRQ_TX_DONE_MASK) != 0) {
-        Serial.println("(irqFlags & IRQ_TX_DONE_MASK) != 0");
       if (_onTxDone) {
-          Serial.println("_onTxDone()");
         _onTxDone();
-      } else {
-            Serial.println("not _onTxDone");
       }
-    } else {
-        Serial.println("not (irqFlags & IRQ_RX_DONE_MASK) != 0 && not (irqFlags & IRQ_TX_DONE_MASK) != 0");
     }
-  } else {
-      Serial.println("not (irqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK) == 0");
   }
 }
 
