@@ -8,12 +8,25 @@
 
 #define NODE_ID 0x01
 
-// Moc nadawania [dBm]. UWAGA: 17 dBm (PA_BOOST) pobiera ~90 mA, a 20 dBm ~130 mA.
-// Pin 3V3 adaptera FTDI daje tylko ~50 mA (a MCU+flash biora swoje ~15 mA) -> przy TX
-// napiecie sie zalamuje i MCU resetuje sie (brown-out) w momencie rozpoczecia nadawania.
-// Do testow na biurku wystarczy 2 dBm (~30 mA calosc). Do testow zasiegu podnies do 17/20,
-// ale tylko przy zasilaniu z baterii albo z 5V przez pokladowy regulator Moteino.
+// ==================== MOC NADAJNIKA ====================
+// Zakres 2..20 dBm (wyjscie PA_BOOST - jedyne podlaczone do anteny w modulach RFM95/96).
+//
+//   dBm | pobor radia | zasieg | uwagi
+//   ----+-------------+--------+---------------------------------------------------
+//     2 |   ~25 mA    |  maly  | testy na biurku, bezpieczne na pinie 3V3 FTDI
+//    10 |   ~40 mA    |   ok   | maksimum jakie warto probowac na zasilaniu z FTDI
+//    17 |   ~90 mA    |  duzy  | wymaga baterii albo 5V przez regulator Moteino
+//    20 |  ~130 mA    |  MAKS  | tryb PA_DAC; mocne zasilanie + ~100 uF przy radiu,
+//       |             |        | Semtech zaleca duty cycle <= 1%
+//
+// Za wysoka wartosc przy slabym zasilaniu = reset przy kazdym nadawaniu; widac to
+// w logu jako "[BOOT] Reset cause: BROWN_OUT". Moc mozna tez zmieniac w trakcie
+// pracy: manager->setTxPower(dbm) - obowiazuje od nastepnej transmisji.
 #define TX_POWER_DBM 2
+
+#if TX_POWER_DBM < TX_POWER_MIN_DBM || TX_POWER_DBM > TX_POWER_MAX_DBM
+#error "TX_POWER_DBM poza zakresem - dozwolone 2..20 dBm (PA_BOOST)"
+#endif
 
 
 int count = 0;
@@ -82,6 +95,7 @@ void setupRadio() {
                         });
 
     manager->setTxPower(TX_POWER_DBM);
+    manager->printTxPower();
 
     manager->dumpRegisters();
 }

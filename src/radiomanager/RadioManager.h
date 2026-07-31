@@ -14,6 +14,15 @@
 
 #define LOG_ACTIVE false
 
+// Moc nadawania RFM95/96: uzywamy wyjscia PA_BOOST, bo tylko ono jest podlaczone
+// do anteny w modulach HopeRF (wyjscie RFO zostaje niepodlaczone - dalo by ~zero mocy).
+// Powyzej 17 dBm uklad wchodzi w tryb wysokiej mocy (PA_DAC) i wymaga podniesienia
+// progu OCP - biblioteka ustawia tam 140 mA, co przycina PA przy 20 dBm.
+#define TX_POWER_MIN_DBM        2   // minimum dla PA_BOOST
+#define TX_POWER_MAX_DBM        20  // maksimum SX1276 (tryb PA_DAC)
+#define TX_POWER_FTDI_SAFE_DBM  10  // powyzej tego zasilanie z pinu 3V3 FTDI nie wyrabia
+#define TX_OCP_HIGH_POWER_MA    150 // limit pradu PA dla trybu >17 dBm (Semtech 5.4.3)
+
 
 class RadioManager {
 public:
@@ -49,6 +58,7 @@ public:
     String lastReceivedData;
     volatile int receivedPacketSize = 0;
 
+    int8_t txPowerDbm = 0;
     bool needToSendAckToSender = false;
     bool sendAckAutomaticly = true; //TODO czyba powinno być na stałe na false, a potem ręcznie wysyłać sendACK
     volatile bool _haveData;
@@ -83,7 +93,10 @@ public:
     void setHaveData(bool value);
     bool isTransmissionFinished();
     void setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*receiveDoneCallback)(int), void(*txDoneCallback)());
-    void setTxPower(int dbm);
+    int8_t setTxPower(int8_t dbm);       // zwraca moc faktycznie ustawiona (po ograniczeniu do zakresu)
+    int8_t getTxPower();
+    uint16_t getTxCurrentEstimate_mA();  // szacunkowy pobor pradu radia w czasie nadawania
+    void printTxPower();
     void dumpRegisters();
     void onOtaDataReceived(void (*callback)(String &, uint8_t));
     bool isOtaPayload(String &str);

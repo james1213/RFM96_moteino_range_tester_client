@@ -488,8 +488,49 @@ void RadioManager::dumpRegisters() {
     LoRa.dumpRegisters(Serial);
 }
 
-void RadioManager::setTxPower(int dbm) {
-    LoRa.setTxPower(dbm);
+// Ustawia moc nadawania w dBm (PA_BOOST). Wartosci spoza zakresu sa przycinane
+// do TX_POWER_MIN_DBM..TX_POWER_MAX_DBM. Mozna wywolywac w dowolnym momencie,
+// takze w trakcie pracy - zmiana obowiazuje od nastepnej transmisji.
+int8_t RadioManager::setTxPower(int8_t dbm) {
+    if (dbm < TX_POWER_MIN_DBM) dbm = TX_POWER_MIN_DBM;
+    if (dbm > TX_POWER_MAX_DBM) dbm = TX_POWER_MAX_DBM;
+
+    LoRa.setTxPower(dbm, PA_OUTPUT_PA_BOOST_PIN);
+    if (dbm > 17) {
+        // biblioteka ustawia w tym miejscu OCP=140 mA, czyli ponizej poboru PA przy 20 dBm
+        LoRa.setOCP(TX_OCP_HIGH_POWER_MA);
+    }
+
+    txPowerDbm = dbm;
+    return dbm;
+}
+
+int8_t RadioManager::getTxPower() {
+    return txPowerDbm;
+}
+
+// Wartosci orientacyjne z noty SX1276 - sluza do oceny, czy zasilanie wyrobi.
+uint16_t RadioManager::getTxCurrentEstimate_mA() {
+    if (txPowerDbm > 17) return 130;
+    if (txPowerDbm >= 15) return 90;
+    if (txPowerDbm >= 10) return 40;
+    if (txPowerDbm >= 5) return 30;
+    return 25;
+}
+
+void RadioManager::printTxPower() {
+    Serial.print(F("[RADIO] TX power: "));
+    Serial.print(txPowerDbm);
+    Serial.print(F(" dBm (PA_BOOST, ~"));
+    Serial.print(getTxCurrentEstimate_mA());
+    Serial.println(F(" mA podczas nadawania)"));
+    if (txPowerDbm > TX_POWER_FTDI_SAFE_DBM) {
+        Serial.println(F("[RADIO] UWAGA: przy tej mocy zasilaj plytke z baterii albo 5V"));
+        Serial.println(F("[RADIO] przez regulator - pin 3V3 FTDI spowoduje reset (BROWN_OUT)."));
+    }
+    if (txPowerDbm > 17) {
+        Serial.println(F("[RADIO] Tryb wysokiej mocy (PA_DAC): Semtech zaleca duty cycle <= 1%."));
+    }
 }
 
 void RadioManager::onOtaDataReceived(void (*callback)(String &, uint8_t)) {
