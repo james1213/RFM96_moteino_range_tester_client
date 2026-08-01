@@ -118,7 +118,10 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                 }
             } else if (inputLen > 8 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'E' && _input[5] == 'O' && _input[6] == 'F' && _input[7] == '?') {
                 if (otaState == OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL)) {
-                    finalCrc32 = String(_input).substring(8).toInt();
+                    // strtoul, a nie toInt(): toInt() zwraca long (ze znakiem), wiec CRC
+                    // powyzej 2147483647 - a to polowa mozliwych obrazow - zostaloby
+                    // obciete i target zawsze odpowiadalby FLX?EOF?ERR.
+                    finalCrc32 = strtoul(String(_input).substring(8).c_str(), nullptr, 10);
                     otaState = OtaState(SENDING_WIRELESS_EOF);
                 }
 //            } else if (strstr(_input, "TO:") == _input && strlen(colon + 1) > 0) {
@@ -183,6 +186,16 @@ bool RadioOta::isResponseForCurrentHexPacket(const String &str, uint8_t prefixLe
     return false;
 }
 
+// Spozniona odpowiedz dla poprzedniego pakietu jest dowodem, ze target zyje i ze
+// wlasnie odebral od nas radiowy auto-ACK (RadioManager potwierdza ramke, zanim
+// warstwa OTA zdecyduje, czy jej trescią sie zajac). Nie moze wiec kosztowac nas
+// proby wyslania biezacego pakietu - inaczej seria zgubionych ACK wyczerpalaby
+// limit 3 prob i zrywala caly transfer, choc kanal caly czas dziala.
+// Nie zapetli sie: target po swoich 3 probach przestaje powtarzac odpowiedz.
+void RadioOta::noteStaleHexResponse() {
+    hexSendTryes = 0;
+}
+
 void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
     if (DEBUG) Serial.print(F("OTA | radioOtaDataReceived: \""));
     if (DEBUG) Serial.print(str);
@@ -206,14 +219,17 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
             Serial.println(F("OTA | Handshake response received"));
         }
     } else if (str.startsWith(hexOkResponse)) {
-        if ((otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
-             || otaState == OtaState(SENDING_WIRELESS_HEX))
-            && isResponseForCurrentHexPacket(str, hexOkResponse.length())) {
-            hexSendTryes = 0;
-            Serial.println(F("FLX?HEX?OK")); // do Javy zawsze bez numeru - format serialu bez zmian
-            hexDataFromSerialStartTime = millis();
-            otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
-            if (DEBUG) Serial.println(F("OTA | HEX response received"));
+        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
+            || otaState == OtaState(SENDING_WIRELESS_HEX)) {
+            if (isResponseForCurrentHexPacket(str, hexOkResponse.length())) {
+                hexSendTryes = 0;
+                Serial.println(F("FLX?HEX?OK")); // do Javy zawsze bez numeru - format serialu bez zmian
+                hexDataFromSerialStartTime = millis();
+                otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
+                if (DEBUG) Serial.println(F("OTA | HEX response received"));
+            } else {
+                noteStaleHexResponse();
+            }
         }
     } else if (str.equals(eofOkResponse)) {
         if (otaState == OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE)
@@ -224,15 +240,22 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
             Serial.println(F("OTA | EOF response received"));
         }
     } else if (str.startsWith(hexErrResponse)) {
-        if ((otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
-             || otaState == OtaState(SENDING_WIRELESS_HEX))
-            && isResponseForCurrentHexPacket(str, hexErrResponse.length())) {
-            hexSendTryes = 0;
-            Serial.println(F("FLX?HEX?ERR")); // do Javy zawsze bez numeru - format serialu bez zmian
-            hexDataFromSerialStartTime = millis();
-            otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
-            Serial.println(F("OTA | HEX response received, but CRC32 is wrong"));
+        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
+            || otaState == OtaState(SENDING_WIRELESS_HEX)) {
+            if (isResponseForCurrentHexPacket(str, hexErrResponse.length())) {
+                hexSendTryes = 0;
+                Serial.println(F("FLX?HEX?ERR")); // do Javy zawsze bez numeru - format serialu bez zmian
+                hexDataFromSerialStartTime = millis();
+                otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
+                Serial.println(F("OTA | HEX response received, but CRC32 is wrong"));
+            } else {
+                noteStaleHexResponse();
+            }
         }
+    // WRONG_NUM celowo bez sprawdzania numeru: niesie numer OCZEKIWANY przez target,
+    // a nie ten, ktory wlasnie wyslalismy. Duplikat zawsze niesie te sama wartosc
+    // (oczekiwanie nie ruszy, dopoki pakiet nie zostanie zapisany), wiec co najwyzej
+    // powtarza Javie te sama komende cofki - jest samonaprawialny.
     } else if (str.startsWith(hexWrongNumResponse)) {
         if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
             || otaState == OtaState(SENDING_WIRELESS_HEX)) {
