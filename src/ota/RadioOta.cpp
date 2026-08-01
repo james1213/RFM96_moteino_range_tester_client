@@ -33,7 +33,11 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
         }
     } else if (otaState == OtaState(WIRELESS_HANDSHAKE_RESPONSE_RECEIVED)) {
         Serial.println(F("OTA | state = WIRELESS_HANDSHAKE_RESPONSE_RECEIVED"));
-        Serial.println(F("FLX?HANDSHAKE?OK"));
+        // Do "OK" doklejamy wlasny limit dlugosci linii, zeby PC mogl sprawdzic, czy jego
+        // rozmiar pakietu w ogole tu przejdzie - ZANIM wysle tysiac pakietow, ktore
+        // wszystkie failowalyby na CRC przez ucinana koncowke.
+        Serial.print(F("FLX?HANDSHAKE?OK?"));
+        Serial.println(OTA_SERIAL_LINE_MAX);
         hexDataFromSerialStartTime = millis();
         otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
         Serial.println(F("OTA | going to WAITING_FOR_HEX_DATA_FROM_SERIAL state"));
