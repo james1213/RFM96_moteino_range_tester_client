@@ -118,9 +118,11 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                 }
             } else if (inputLen > 8 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'E' && _input[5] == 'O' && _input[6] == 'F' && _input[7] == '?') {
                 if (otaState == OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL)) {
-                    // strtoul, a nie toInt(): toInt() zwraca long (ze znakiem), wiec CRC
-                    // powyzej 2147483647 - a to polowa mozliwych obrazow - zostaloby
-                    // obciete i target zawsze odpowiadalby FLX?EOF?ERR.
+                    // strtoul, a nie toInt(): CRC32 zajmuje pelne 32 bity bez znaku, a toInt()
+                    // opiera sie na atol(), ktorego avr-libc nie definiuje dla przepelnienia
+                    // ("result value is not predictable"). W praktyce atol zawija mod 2^32,
+                    // wiec rzutowanie na uint32_t dawalo dobra wartosc - ale strtoul jest
+                    // zdefiniowane dla calego zakresu, wiec nie polegamy na przypadku.
                     finalCrc32 = strtoul(String(_input).substring(8).c_str(), nullptr, 10);
                     otaState = OtaState(SENDING_WIRELESS_EOF);
                 }
