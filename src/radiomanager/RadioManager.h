@@ -92,7 +92,8 @@ public:
     bool sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     bool sendTagged(String &taggedPayload, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     bool send(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
-    void startSending(String &str, uint8_t address, bool ackRequested);
+    bool startSending(String &str, uint8_t address, bool ackRequested);
+    unsigned long lastRamErrorMillis = 0;
     void LoRa_sendMessage(const String &message);
     void LoRa_txMode();
     void sendAck();

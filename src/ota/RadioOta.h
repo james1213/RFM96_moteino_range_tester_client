@@ -134,7 +134,8 @@ private:
     uint16_t targetID=0;
 
 
-    String serialReceivedBuffer = "";
+    // Byl tu String serialReceivedBuffer - kopia linii, ktora i tak lezy juz w _input.
+    // Usunieta: ~106 B sterty w najciasniejszym momencie wysylki.
     long currentHexPacketNumber = -1; // numer pakietu z ostatniej ramki FLX?DAT? wyslanej w eter
 
     bool isResponseForCurrentHexPacket(const String &str, uint8_t prefixLength);

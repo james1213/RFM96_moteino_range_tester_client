@@ -119,11 +119,14 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                 }
             } else if (inputLen > 8 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'H' && _input[5] == 'E' && _input[6] == 'X' && _input[7] == '?') {
                 if (otaState == OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL)) {
-                    serialReceivedBuffer = String(_input).substring(8);
-                    // format z Javy: "<numer>?<base64>?<crc>" - toInt() czyta wiodacy numer
-                    currentHexPacketNumber = serialReceivedBuffer.toInt();
-                    if (DEBUG) Serial.print(F("OTA | serialReceivedBuffer = "));
-                    if (DEBUG) Serial.println(serialReceivedBuffer);
+                    // Bez kopiowania do Stringa: tresc zostaje w _input, ktory jest polem
+                    // i przetrwa do nastepnej linii z PC (a Java nie przysyla kolejnej,
+                    // dopoki nie odpowiemy). Kopia kosztowala ~106 B sterty plus dwa
+                    // Stringi tymczasowe - na 2 KB to bylo tyle, ile brakowalo do
+                    // zbudowania ramki przy 64-bajtowych pakietach.
+                    // format z Javy: "<numer>?<base64>?<crc>"
+                    currentHexPacketNumber = atol(_input + 8);
+                    if (DEBUG) { Serial.print(F("OTA | hex line = ")); Serial.println(_input + 8); }
                     otaState = OtaState(SENDING_WIRELESS_HEX);
                 }
             } else if (inputLen > 8 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'E' && _input[5] == 'O' && _input[6] == 'F' && _input[7] == '?') {
@@ -157,13 +160,14 @@ bool RadioOta::radioSendHexFromSerial() {
     // "<OTA>" doklejamy od razu i wysylamy przez sendTagged, zeby nie powstala druga
     // pelna kopia payloadu w sendOta. To najwiekszy pojedynczy pakiet danych w calym
     // systemie, a na 2 KB RAM lancuch kopii Stringow decydowal o powodzeniu wysylki.
+    const char *hexLine = _input + 8; // "<numer>?<base64>?<crc>" prosto z bufora serialowego
     String dataToSend;
-    if (!dataToSend.reserve(serialReceivedBuffer.length() + 24)) {
+    if (!dataToSend.reserve(strlen(hexLine) + 24)) {
         Serial.println(F("OTA | ERROR: brak RAM na ramke HEX - nie wyslano"));
         return false;
     }
     dataToSend = F("<OTA>FLX?DAT?");
-    dataToSend += serialReceivedBuffer;
+    dataToSend += hexLine;
     if (DEBUG) { Serial.print(F("OTA | radioSendHexFromSerial(), data = ")); Serial.println(dataToSend); }
     return manager->sendTagged(dataToSend, targetID);
 }

@@ -85,17 +85,20 @@ void RadioManager::sendLoop() {
                 dataSentCallback();
             }
         } else if (!sendBuffer.equals("") || !ackSendBuffer.equals("")) {
+            // Flagi transmisji ustawia dopiero startSending, i to tylko gdy naprawde
+            // ruszy nadawanie. Wczesniej zerowalismy je TUTAJ, wiec gdy startSending
+            // przerwal z braku RAM, transmissionFinished zostawalo false na zawsze -
+            // przerwanie TxDone nigdy nie mialo skad przyjsc i radio wisialo do
+            // zadzialania watchdoga (2 s), a pakiet i tak przepadal.
             DEBUGlogln(F("[RFM96] Sending another packet ... "));
-            transmissionFinished = false;
-            transmissionClenedUp = false;
             if (!ackSendBuffer.equals("")) {
                 DEBUGlogln(F("[RFM96] Sending ACK packet ... "));
-                startSending(ackSendBuffer, ackSendBufferDest, false);
-                ackSendBuffer = "";
-            } else if (!sendBuffer.equals("")) {
+                if (startSending(ackSendBuffer, ackSendBufferDest, false)) ackSendBuffer = "";
+            } else {
                 DEBUGlogln(F("[RFM96] Sending normal packet ... "));
-                startSending(sendBuffer, sendBufferDest, sendBufferAckReq);
-                sendBuffer = "";
+                // Bufor zostaje przy niepowodzeniu - kolejny obieg petli sprobuje ponownie,
+                // zamiast po cichu gubic pakiet.
+                if (startSending(sendBuffer, sendBufferDest, sendBufferAckReq)) sendBuffer = "";
             }
         }
     }
@@ -427,7 +430,7 @@ bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
     return true;
 }
 
-void RadioManager::startSending(String &str, uint8_t address, bool ackRequested) {
+bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested) {
     DEBUGlog(F("Sending: ["));
     DEBUGlog(str);
     DEBUGlog(F("] to "));
@@ -446,10 +449,15 @@ void RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
     }
     String frame;
     if (!frame.reserve(str.length() + 16)) { // naglowek "adr@nadawca@id@ack@" + '`'
-        Serial.print(F("RadioManager | ERROR: brak RAM na ramke wyjsciowa (wolne "));
-        Serial.print(freeRam());
-        Serial.println(F(" B) - nie wyslano"));
-        return;
+        // Komunikat rzadziej niz raz na sekunde - inaczej przy ciasnej stercie zalewalby
+        // serial i sam blokowal petle. Bufor zostaje, wiec probujemy dalej.
+        if (millis() - lastRamErrorMillis > 1000) {
+            lastRamErrorMillis = millis();
+            Serial.print(F("RadioManager | ERROR: brak RAM na ramke wyjsciowa (wolne "));
+            Serial.print(freeRam());
+            Serial.println(F(" B) - ponawiam"));
+        }
+        return false;
     }
     frame += String(address);
     frame += '@';
@@ -464,6 +472,9 @@ void RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
     DEBUGlog(F("Transmitting str: ["));
     DEBUGlog(frame);
     DEBUGlogln(F("]"));
+    // Dopiero teraz - ramka jest gotowa i nadawanie na pewno ruszy.
+    transmissionFinished = false;
+    transmissionClenedUp = false;
     sendingTime = micros();
     txStartMillis = millis();
     LoRa_sendMessage(frame);
@@ -472,6 +483,7 @@ void RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
         DEBUGlog(String(micros() - startTime));
         DEBUGlogln(F(" us"));
     }
+    return true;
 }
 
 void RadioManager::LoRa_sendMessage(const String &message) {
