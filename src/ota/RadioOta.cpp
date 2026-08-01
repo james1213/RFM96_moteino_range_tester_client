@@ -57,7 +57,7 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
             otaState = OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE);
         }
     } else if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)) {
-        if (millis() - hexSendStartTime > 1000) {
+        if (millis() - hexSendStartTime > 1000 + (micros() & 0xFF)) { // jitter jak przy handshake
             otaState = OtaState(SENDING_WIRELESS_HEX);
             Serial.println(F("OTA | Trying to send hex again"));
         }
@@ -75,7 +75,7 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
             otaState = OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE);
         }
     } else if (otaState == OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE)) {
-        if (millis() - eofSendStartTime > 10000) { //aż 10 sek bo srawdzenie całego pliku może dlużej potrwać (sprawdzić doświadczalnei ile trwa)
+        if (millis() - eofSendStartTime > 10000 + (micros() & 0xFF)) { //aż 10 sek bo srawdzenie całego pliku może dlużej potrwać (sprawdzić doświadczalnei ile trwa)
             otaState = OtaState(SENDING_WIRELESS_EOF);
             Serial.println(F("OTA | Trying to send EOF again"));
         }

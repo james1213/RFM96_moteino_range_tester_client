@@ -329,7 +329,8 @@ bool RadioManager::isAckPayloadAndValidMessageId(String str) {
 }
 
 void RadioManager::waitForAckTimeoutLoop() {
-    if (waitingForAck && !ackReceived) {
+    // ackFramePendingTx: nie odliczaj timeoutu, dopoki ramka nie zostala nadana
+    if (waitingForAck && !ackReceived && !ackFramePendingTx) {
         if (millis() - waitForAckStartTime >= ackTimeout) {
             waitingForAck = false;
             pendingAckMessageId = 0;
@@ -356,6 +357,10 @@ bool RadioManager::send(String &str, uint8_t address, void (*_ackReceivedCallbac
 // ponowic wysylke pozniej. Ciche nadpisywanie bufora gubilo ramki OTA, gdy ruch
 // testowy i transfer OTA dzialaly rownoczesnie.
 bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload), bool useAckBuffer) {
+    // Ramka ACK nigdy nie zada wlasnego ACK: sendLoop nadaje ackSendBuffer ze
+    // startSending(..., false), wiec ackRequested=true z useAckBuffer=true
+    // zostawiloby ackFramePendingTx na zawsze i zablokowalo timeout ACK.
+    if (useAckBuffer) ackRequested = false;
     if (!useAckBuffer) {
         if (sendBuffer.length() > 0) {
             DEBUGlogln(F("RadioManager | busy: sendBuffer occupied"));
@@ -372,7 +377,8 @@ bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
         ackCallback_paylod = str;
         waitingForAck = true;
         ackReceived = false;
-        waitForAckStartTime = millis();
+        waitForAckStartTime = millis(); // re-stemplowane w startSending przy faktycznym nadaniu
+        ackFramePendingTx = true;
     }
     if (useAckBuffer) {
         ackSendBuffer = str; // ACK moze nadpisac starszy ACK - nadawca i tak ponowi
@@ -395,7 +401,15 @@ void RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
     unsigned long startTime = micros();
     messageId++;
     if (messageId == 0) messageId = 1;
-    if (ackRequested) pendingAckMessageId = messageId; // to id trafia do ramki i wroci w "!id"
+    if (ackRequested) {
+        pendingAckMessageId = messageId; // to id trafia do ramki i wroci w "!id"
+        // Okno ACK liczymy od faktycznego nadania, nie od zakolejkowania. Ramka mogla
+        // czekac w buforze (np. az watchdog odblokuje zawieszony TX) - ze stemplem
+        // z chwili zakolejkowania okno wygasaloby w momencie startu nadawania i
+        // timeout zerowalby pendingAckMessageId tuz przed nadejsciem prawdziwego ACK.
+        waitForAckStartTime = millis();
+        ackFramePendingTx = false;
+    }
     String frame;
     frame.reserve(str.length() + 16); // naglowek "adr@nadawca@id@ack@" + '`'
     frame += String(address);

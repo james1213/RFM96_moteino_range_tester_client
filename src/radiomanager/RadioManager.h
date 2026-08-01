@@ -37,6 +37,7 @@ public:
     volatile bool transmissionClenedUp = true;
     volatile bool ackReceived = false;
     bool waitingForAck = false;
+    bool ackFramePendingTx = false; // ramka z zadaniem ACK zakolejkowana, ale jeszcze nie nadana
     unsigned long waitForAckStartTime = 0;
     unsigned long ackTimeout = 1000; //ms
     String ackCallback_paylod = "";

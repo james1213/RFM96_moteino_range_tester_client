@@ -134,36 +134,36 @@ void loop() {
     // Ruch testowy: wstrzymany, gdy trwa transfer OTA (isOtaInProgress), a gdy radio
     // jest chwilowo zajete (send() zwraca false), wiadomosc jest po prostu pomijana -
     // send() NIE nadpisuje juz po cichu zakolejkowanej ramki.
-    // if (!radioOta->isOtaInProgress() && runEvery(2000)) {
-    //     Serial.println();
-    //
-    //     String str;
-    //     str.reserve(80);
-    //     str += F("Hello World [#");
-    //     str += count++;
-    //     str += F("] with ACK | test string 1234567890ABCDEFGHIJKLMNOP");
-    //     Serial.print(F("Sending payload: \""));
-    //     Serial.print(str);
-    //     Serial.println(F("\""));
-    //     bool queued = manager->send(str, 2,
-    //                   []() {
-    //                       Serial.println(F("MAIN | OK"));
-    //                   },
-    //                   [](String &payload) {
-    //                       Serial.print(F("MAIN | NOT OK, payload = "));
-    //                       Serial.println(payload);
-    //                   });
-    //     if (!queued) Serial.println(F("MAIN | radio busy, skipped"));
-    // }
+    if (!radioOta->isOtaInProgress() && runEvery(2000)) {
+        Serial.println();
+
+        String str;
+        str.reserve(80);
+        str += F("Hello World [#");
+        str += count++;
+        str += F("] with ACK | test string 1234567890ABCDEFGHIJKLMNOP");
+        Serial.print(F("Sending payload: \""));
+        Serial.print(str);
+        Serial.println(F("\""));
+        bool queued = manager->send(str, 2,
+                      []() {
+                          Serial.println(F("MAIN | OK"));
+                      },
+                      [](String &payload) {
+                          Serial.print(F("MAIN | NOT OK, payload = "));
+                          Serial.println(payload);
+                      });
+        if (!queued) Serial.println(F("MAIN | radio busy, skipped"));
+    }
 
     radioOta->loop();
 }
 
 void dataReceived(String &str, uint8_t senderId) {
-    // Serial.print(F("MAIN | Received data: \""));
-    // Serial.print(str);
-    // Serial.print(F("\" from senderId: "));
-    // Serial.println(senderId);
+    Serial.print(F("MAIN | Received data: \""));
+    Serial.print(str);
+    Serial.print(F("\" from senderId: "));
+    Serial.println(senderId);
 }
 
 
