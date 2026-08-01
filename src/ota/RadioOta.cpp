@@ -110,6 +110,8 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
             } else if (inputLen > 8 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'H' && _input[5] == 'E' && _input[6] == 'X' && _input[7] == '?') {
                 if (otaState == OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL)) {
                     serialReceivedBuffer = String(_input).substring(8);
+                    // format z Javy: "<numer>?<base64>?<crc>" - toInt() czyta wiodacy numer
+                    currentHexPacketNumber = serialReceivedBuffer.toInt();
                     if (DEBUG) Serial.print(F("OTA | serialReceivedBuffer = "));
                     if (DEBUG) Serial.println(serialReceivedBuffer);
                     otaState = OtaState(SENDING_WIRELESS_HEX);
@@ -162,6 +164,25 @@ bool RadioOta::isOtaInProgress() {
     return otaState != OtaState(WAITING_FOR_SERIAL_HANDSHAKE);
 }
 
+// Odpowiedzi HEX niosa numer pakietu, ktorego dotycza ("FLX?HEX?OK?134"). Dzieki temu
+// spozniona retransmisja odpowiedzi na pakiet n nie zostanie zaliczona jako odpowiedz
+// na pakiet n+1 (co konczylo sie rozjazdem numeracji i cofka przez FLX?HEX?WRONG_NUM).
+// Odpowiedz bez numeru = starszy firmware odbiornika -> akceptujemy ja jak dawniej.
+bool RadioOta::isResponseForCurrentHexPacket(const String &str, uint8_t prefixLength) {
+    if (str.length() <= prefixLength || str.charAt(prefixLength) != '?') {
+        return true;
+    }
+    long responseNumber = str.substring(prefixLength + 1).toInt();
+    if (responseNumber == currentHexPacketNumber) {
+        return true;
+    }
+    Serial.print(F("OTA | Ignoring HEX response for packet "));
+    Serial.print(responseNumber);
+    Serial.print(F(", waiting for "));
+    Serial.println(currentHexPacketNumber);
+    return false;
+}
+
 void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
     if (DEBUG) Serial.print(F("OTA | radioOtaDataReceived: \""));
     if (DEBUG) Serial.print(str);
@@ -184,11 +205,12 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
             otaState = OtaState(WIRELESS_HANDSHAKE_RESPONSE_RECEIVED);
             Serial.println(F("OTA | Handshake response received"));
         }
-    } else if (str.equals(hexOkResponse)) {
-        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
-            || otaState == OtaState(SENDING_WIRELESS_HEX)) {
+    } else if (str.startsWith(hexOkResponse)) {
+        if ((otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
+             || otaState == OtaState(SENDING_WIRELESS_HEX))
+            && isResponseForCurrentHexPacket(str, hexOkResponse.length())) {
             hexSendTryes = 0;
-            Serial.println(F("FLX?HEX?OK"));
+            Serial.println(F("FLX?HEX?OK")); // do Javy zawsze bez numeru - format serialu bez zmian
             hexDataFromSerialStartTime = millis();
             otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
             if (DEBUG) Serial.println(F("OTA | HEX response received"));
@@ -201,11 +223,12 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
             resetStateAndValues();
             Serial.println(F("OTA | EOF response received"));
         }
-    } else if (str.equals(hexErrResponse)) {
-        if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
-            || otaState == OtaState(SENDING_WIRELESS_HEX)) {
+    } else if (str.startsWith(hexErrResponse)) {
+        if ((otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
+             || otaState == OtaState(SENDING_WIRELESS_HEX))
+            && isResponseForCurrentHexPacket(str, hexErrResponse.length())) {
             hexSendTryes = 0;
-            Serial.println(F("FLX?HEX?ERR"));
+            Serial.println(F("FLX?HEX?ERR")); // do Javy zawsze bez numeru - format serialu bez zmian
             hexDataFromSerialStartTime = millis();
             otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
             Serial.println(F("OTA | HEX response received, but CRC32 is wrong"));
@@ -268,5 +291,6 @@ void RadioOta::resetStateAndValues() {
     handshakeTryes = 0;
     hexSendTryes = 0;
     eofSendTryes = 0;
+    currentHexPacketNumber = -1;
     otaState = OtaState(WAITING_FOR_SERIAL_HANDSHAKE);
 }

@@ -106,6 +106,9 @@ private:
 
 
     String serialReceivedBuffer = "";
+    long currentHexPacketNumber = -1; // numer pakietu z ostatniej ramki FLX?DAT? wyslanej w eter
+
+    bool isResponseForCurrentHexPacket(const String &str, uint8_t prefixLength);
 
     uint8_t readSerialLine(char* input, char endOfLineChar=10, uint8_t maxLength=115, uint16_t timeout=1000);
     boolean resetEEPROMCondition();
