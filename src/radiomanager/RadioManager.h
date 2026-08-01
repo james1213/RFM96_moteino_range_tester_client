@@ -83,7 +83,10 @@ public:
     bool isAckPayloadAndValidMessageId(String str);
     void waitForAckTimeoutLoop();
     void txStuckWatchdogLoop();
+    static int freeRam();
+    bool buildTaggedPayload(String &out, const char *tag, const String &body);
     bool sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
+    bool sendTagged(String &taggedPayload, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     bool send(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     void startSending(String &str, uint8_t address, bool ackRequested);
     void LoRa_sendMessage(const String &message);

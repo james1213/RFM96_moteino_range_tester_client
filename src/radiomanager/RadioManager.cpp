@@ -342,13 +342,53 @@ void RadioManager::waitForAckTimeoutLoop() {
     }
 }
 
+// Wolny RAM = odleglosc miedzy szczytem sterty a wierzcholkiem stosu.
+int RadioManager::freeRam() {
+    extern int __heap_start, *__brkval;
+    int stackTop;
+    return (int) &stackTop - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
+}
+
+// Sklada "<TAG>" + tresc z REZERWACJA i sprawdzeniem wyniku.
+//
+// Arduino String sygnalizuje brak pamieci wylacznie tym, ze operator+ czysci CALY string
+// (WString.cpp: "if (!a.concat(...)) a.invalidate();"), a operator+= ignoruje blad po cichu.
+// Bez tej kontroli pusty bufor szedl dalej jako "przyjety do wyslania": sendLoop nic nie
+// nadawal, a warstwa wyzej liczyla to jako udana probe i czekala na odpowiedz, ktora nie
+// miala prawa przyjsc. Objawem byl transfer, ktory "wysyla" i nigdy nic nie dociera.
+bool RadioManager::buildTaggedPayload(String &out, const char *tag, const String &body) {
+    out = "";
+    if (!out.reserve(body.length() + 8) || !out.concat(tag) || !out.concat(body)) {
+        Serial.print(F("RadioManager | ERROR: brak RAM na ramke ("));
+        Serial.print(body.length() + 5);
+        Serial.print(F(" B, wolne "));
+        Serial.print(freeRam());
+        Serial.println(F(" B) - nie wyslano"));
+        out = "";
+        return false;
+    }
+    return true;
+}
+
 bool RadioManager::sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
-    String strOta = "<OTA>" + str;
+    String strOta;
+    if (!buildTaggedPayload(strOta, "<OTA>", str)) return false;
     return sendDirectly(strOta, address, _ackReceivedCallback || _ackNotReceivedCallback, _ackReceivedCallback, _ackNotReceivedCallback, false);
 }
 
+// Wysyla payload, ktory JUZ zawiera znacznik "<OTA>". Pozwala zlozyc go raz u wolajacego
+// zamiast tworzyc tu druga pelna kopie - przy 64-bajtowych pakietach kazda zaoszczedzona
+// kopia to ~115 B sterty, a na 2 KB ukladu lancuch kopii siegal granicy.
+bool RadioManager::sendTagged(String &taggedPayload, uint8_t address,
+                              void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
+    return sendDirectly(taggedPayload, address,
+                        _ackReceivedCallback || _ackNotReceivedCallback,
+                        _ackReceivedCallback, _ackNotReceivedCallback, false);
+}
+
 bool RadioManager::send(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
-    String strData = "<DAT>" + str;
+    String strData;
+    if (!buildTaggedPayload(strData, "<DAT>", str)) return false;
     return sendDirectly(strData, address, _ackReceivedCallback || _ackNotReceivedCallback, _ackReceivedCallback, _ackNotReceivedCallback, false);
 }
 
@@ -371,6 +411,25 @@ bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
             return false;
         }
     }
+    // Kopia do bufora PRZED ksiegowaniem ACK: gdy zabraknie RAM, String po cichu zostaje
+    // pusty, a wtedy sendLoop nic by nie nadal, mimo ze zwrocilibysmy "wyslano".
+    String &target = useAckBuffer ? ackSendBuffer : sendBuffer;
+    target = str;
+    if (target.length() != str.length()) {
+        Serial.print(F("RadioManager | ERROR: brak RAM na bufor nadawczy ("));
+        Serial.print(str.length());
+        Serial.print(F(" B, wolne "));
+        Serial.print(freeRam());
+        Serial.println(F(" B) - nie wyslano"));
+        target = "";
+        return false;
+    }
+    if (useAckBuffer) {
+        ackSendBufferDest = address; // ACK moze nadpisac starszy ACK - nadawca i tak ponowi
+    } else {
+        sendBufferDest = address;
+        sendBufferAckReq = ackRequested;
+    }
     if (ackRequested) {
         ackReceivedCallback = _ackReceivedCallback;
         ackNotReceivedCallback = _ackNotReceivedCallback;
@@ -379,14 +438,6 @@ bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
         ackReceived = false;
         waitForAckStartTime = millis(); // re-stemplowane w startSending przy faktycznym nadaniu
         ackFramePendingTx = true;
-    }
-    if (useAckBuffer) {
-        ackSendBuffer = str; // ACK moze nadpisac starszy ACK - nadawca i tak ponowi
-        ackSendBufferDest = address;
-    } else {
-        sendBuffer = str;
-        sendBufferDest = address;
-        sendBufferAckReq = ackRequested;
     }
     if (messageId == 0) messageId = 1;
     sendLoop();
@@ -411,7 +462,12 @@ void RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
         ackFramePendingTx = false;
     }
     String frame;
-    frame.reserve(str.length() + 16); // naglowek "adr@nadawca@id@ack@" + '`'
+    if (!frame.reserve(str.length() + 16)) { // naglowek "adr@nadawca@id@ack@" + '`'
+        Serial.print(F("RadioManager | ERROR: brak RAM na ramke wyjsciowa (wolne "));
+        Serial.print(freeRam());
+        Serial.println(F(" B) - nie wyslano"));
+        return;
+    }
     frame += String(address);
     frame += '@';
     frame += String(nodeId);

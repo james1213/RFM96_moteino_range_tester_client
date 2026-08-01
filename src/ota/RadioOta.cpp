@@ -154,10 +154,18 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
 }
 
 bool RadioOta::radioSendHexFromSerial() {
-    if (DEBUG) Serial.print(F("OTA | radioSendHexFromSerial(), data = "));
-    String dataToSend = "FLX?DAT?" + serialReceivedBuffer;
-    if (DEBUG) Serial.println(dataToSend);
-    return manager->sendOta(dataToSend, targetID);
+    // "<OTA>" doklejamy od razu i wysylamy przez sendTagged, zeby nie powstala druga
+    // pelna kopia payloadu w sendOta. To najwiekszy pojedynczy pakiet danych w calym
+    // systemie, a na 2 KB RAM lancuch kopii Stringow decydowal o powodzeniu wysylki.
+    String dataToSend;
+    if (!dataToSend.reserve(serialReceivedBuffer.length() + 24)) {
+        Serial.println(F("OTA | ERROR: brak RAM na ramke HEX - nie wyslano"));
+        return false;
+    }
+    dataToSend = F("<OTA>FLX?DAT?");
+    dataToSend += serialReceivedBuffer;
+    if (DEBUG) { Serial.print(F("OTA | radioSendHexFromSerial(), data = ")); Serial.println(dataToSend); }
+    return manager->sendTagged(dataToSend, targetID);
 }
 
 bool RadioOta::radioSendHandshake() {
