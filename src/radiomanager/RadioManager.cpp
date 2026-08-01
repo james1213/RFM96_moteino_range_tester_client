@@ -43,18 +43,6 @@ uint8_t RadioManager::getSenderIdOfLastMessage() {
     return senderIdOfLastMessage;
 }
 
-String RadioManager::getLastReceivedData() {
-    return lastReceivedData;
-}
-
-bool RadioManager::isHaveDate() {
-    return _haveData;
-}
-
-void RadioManager::setHaveData(bool value) {
-    _haveData = value;
-}
-
 bool RadioManager::isTransmissionFinished() {
     return transmissionFinished;
 }
@@ -160,11 +148,6 @@ void RadioManager::receiveLoop() {
                 DEBUGlogln(F("RadioManager | stale/unmatched ACK - ignoring"));
                 return;
             }
-            DEBUGlogln(F("RadioManager | _haveData = true"));
-            _haveData = true;
-            lastReceivedData = str;
-
-
             if (receivedMessageIdOfLastMessage != 0) {
                 DEBUGlogln(F("RadioManager | checking if it is need to send ACK"));
                 DEBUGlog(F("RadioManager | !isAckPayload(str) = "));

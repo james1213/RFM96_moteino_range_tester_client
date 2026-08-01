@@ -58,13 +58,17 @@ public:
     uint8_t destinationIdOfLastMessage = 0;
     uint8_t senderIdOfLastMessage = 0;
     uint8_t receivedMessageIdOfLastMessage = 0;
-    String lastReceivedData;
     volatile int receivedPacketSize = 0;
 
     int8_t txPowerDbm = 0;
     bool needToSendAckToSender = false;
     bool sendAckAutomaticly = true; //TODO czyba powinno być na stałe na false, a potem ręcznie wysyłać sendACK
-    volatile bool _haveData;
+
+    // Byly tu String lastReceivedData i flaga _haveData z para getterow - alternatywne,
+    // odpytywane API odbioru. Nikt z niego nie korzystal (oba projekty uzywaja callbacku
+    // onDataReceived), a lastReceivedData trzymal na stercie KOPIE kazdej odebranej
+    // wiadomosci - przy 64-bajtowych pakietach ~115 B na stale plus jedna dodatkowa
+    // pelna kopia w szczycie parsowania ramki. Usuniete.
 
 //    int receivedBytes[256];
 
@@ -95,9 +99,6 @@ public:
     void setSendAckAutomaticly(bool value);
     bool isAckReceived();
     uint8_t getSenderIdOfLastMessage();
-    String getLastReceivedData();
-    bool isHaveDate();
-    void setHaveData(bool value);
     bool isTransmissionFinished();
     void setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*receiveDoneCallback)(int), void(*txDoneCallback)());
     int8_t setTxPower(int8_t dbm);       // zwraca moc faktycznie ustawiona (po ograniczeniu do zakresu)
