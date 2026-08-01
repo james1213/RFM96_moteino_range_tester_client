@@ -58,9 +58,9 @@
 //         64 |     113      |   283   | ~1,8 min   <- zalecane: ostatni rozmiar,
 //            |              |         |               ktory miesci sie w buforach
 //         96 |     153      |   189   | ~1,4 min
-// Powyzej 64 B trzeba tez dodac -DSERIAL_RX_BUFFER_SIZE=128 w platformio.ini
-// (kompilator sam o tym przypomni ostrzezeniem ponizej).
-#define OTA_PACKET_SIZE_BYTES 16
+// Powyzej 16 B trzeba tez dodac -DSERIAL_RX_BUFFER_SIZE=128 w platformio.ini
+// (kompilator sam o tym przypomni ostrzezeniem ponizej) - jest juz dodane.
+#define OTA_PACKET_SIZE_BYTES 64
 
 // Najdluzsza linia "FLX?HEX?<numer>?<base64>?<crc32>", jaka moze przyjsc z PC:
 // 8 znakow prefiksu + do 5 cyfr numeru pakietu + '?' + base64 + '?' + do 10 cyfr CRC32.
