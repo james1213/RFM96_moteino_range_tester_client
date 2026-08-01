@@ -83,7 +83,13 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
 
 
     if (Serial.available()) {
-        byte inputLen = readSerialLine(_input, 10, 64, 100);
+        byte inputLen = readSerialLine(_input, 10, OTA_SERIAL_LINE_MAX, 100);
+        if (inputLen >= OTA_SERIAL_LINE_MAX) {
+            // Odczyt skonczyl sie na limicie, a nie na '\n' - linia zostala ucieta,
+            // reszta trafi do kolejnego odczytu jako smiec. Bez tego komunikatu objawem
+            // bylby tylko niezgodny CRC kazdego pakietu i transfer bez wyjasnienia.
+            Serial.println(F("OTA | ERROR: linia z PC ucieta - OTA_PACKET_SIZE_BYTES nie zgadza sie z PC"));
+        }
         if (inputLen > 0) {
             boolean configChanged = false;
             char *colon = strchr(_input, ':');

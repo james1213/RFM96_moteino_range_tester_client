@@ -43,6 +43,40 @@
 /////////////////////////////////
 
 
+// ==================== ROZMIAR PAKIETU OTA ====================
+// Ile bajtow firmware'u niesie jeden pakiet. MUSI byc zgodne z SINGLE_PACKET_SIZE
+// w MainController.java po stronie PC. Limit dlugosci linii na serialu i rozmiar
+// bufora wyliczaja sie z tej jednej liczby, wiec nie da sie ich rozjechac.
+//
+// Wieksze pakiety = szybszy transfer, bo staly narzut na pakiet (ramka odpowiedzi
+// ~72 ms + potwierdzenie ~46 ms + obsluga) nie zalezy od ilosci danych. Dla obrazu
+// 18 KB, przy 2 dBm / SF7 / BW 125 kHz:
+//   B/pakiet | linia serial | pakiety | czas transferu
+//   ---------+--------------+---------+---------------
+//         16 |      49      |  1130   | ~4,7 min   (obecnie)
+//         32 |      69      |   565   | ~2,5 min
+//         64 |     113      |   283   | ~1,8 min   <- zalecane: ostatni rozmiar,
+//            |              |         |               ktory miesci sie w buforach
+//         96 |     153      |   189   | ~1,4 min
+// Powyzej 64 B trzeba tez dodac -DSERIAL_RX_BUFFER_SIZE=128 w platformio.ini
+// (kompilator sam o tym przypomni ostrzezeniem ponizej).
+#define OTA_PACKET_SIZE_BYTES 16
+
+// Najdluzsza linia "FLX?HEX?<numer>?<base64>?<crc32>", jaka moze przyjsc z PC:
+// 8 znakow prefiksu + do 5 cyfr numeru pakietu + '?' + base64 + '?' + do 10 cyfr CRC32.
+// Podloga 64 zostawia zapas na krotkie komendy konfiguracyjne (PROGRAMMERID: itp.).
+#define OTA_BASE64_LENGTH(dataBytes) (((dataBytes) + 2) / 3 * 4)
+#define OTA_SERIAL_LINE_NEEDED (8 + 5 + 1 + OTA_BASE64_LENGTH(OTA_PACKET_SIZE_BYTES) + 1 + 10)
+#define OTA_SERIAL_LINE_MAX ((OTA_SERIAL_LINE_NEEDED) > 64 ? (OTA_SERIAL_LINE_NEEDED) : 64)
+
+#if OTA_SERIAL_LINE_MAX > 255
+#error "OTA_SERIAL_LINE_MAX > 255 - readSerialLine przekazuje dlugosc jako uint8_t"
+#endif
+#if OTA_SERIAL_LINE_MAX > SERIAL_RX_BUFFER_SIZE
+#warning "Linia OTA dluzsza niz bufor RX UART: dodaj build_flags = -DSERIAL_RX_BUFFER_SIZE=128 w platformio.ini"
+#endif
+
+
 
 class RadioOta {
 private:
@@ -100,7 +134,7 @@ private:
         uint16_t PROGRAMMER_ID;
     } CONFIG;
 
-    char _input[128];
+    char _input[OTA_SERIAL_LINE_MAX + 1]; // +1 na koncowe zero dopisywane przez readSerialLine
     char c = 0;
     uint16_t targetID=0;
 
@@ -111,7 +145,7 @@ private:
     bool isResponseForCurrentHexPacket(const String &str, uint8_t prefixLength);
     void noteStaleHexResponse();
 
-    uint8_t readSerialLine(char* input, char endOfLineChar=10, uint8_t maxLength=115, uint16_t timeout=1000);
+    uint8_t readSerialLine(char* input, char endOfLineChar=10, uint8_t maxLength=OTA_SERIAL_LINE_MAX, uint16_t timeout=1000);
     boolean resetEEPROMCondition();
     void resetEEPROM();
     void printSettings();
