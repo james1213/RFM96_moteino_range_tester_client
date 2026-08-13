@@ -139,7 +139,7 @@ void loop() {
 
         String str;
         str.reserve(80);
-        str += F("Hello World [#");
+        str += F("Hello World from sender to receiver [#");
         str += count++;
         str += F("] with ACK | test string 1234567890ABCDEFGHIJKLMNOP");
         Serial.print(F("Sending payload: \""));
