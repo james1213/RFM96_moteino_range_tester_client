@@ -142,6 +142,7 @@ void RadioManager::receiveLoop() {
             ackReceived = true;
             waitingForAck = false;
             pendingAckMessageId = 0;
+            apcOnAckPayload(str); // zwrotka "@<rssi>" -> krok regulatora mocy
             if (ackReceivedCallback) {
                 ackReceivedCallback();
             }
@@ -191,6 +192,11 @@ void RadioManager::sendAck() {
     DEBUGlogln(senderIdOfLastMessage);
     String ackString = "!";
     ackString.concat(receivedMessageIdOfLastMessage);
+    // Zwrotka APC: RSSI, z jakim uslyszelismy kwitowana ramke (lastRssi jest z TEJ
+    // ramki - ta sama iteracja receiveLoop). Stary parser czyta "!<id>@<rssi>" bez
+    // zmian, bo toInt() konczy na '@'.
+    ackString.concat('@');
+    ackString.concat(lastRssi);
     sendDirectly(ackString, senderIdOfLastMessage, false, nullptr, nullptr, true);
 }
 
@@ -331,10 +337,62 @@ void RadioManager::waitForAckTimeoutLoop() {
             waitingForAck = false;
             pendingAckMessageId = 0;
             DEBUGlogln(F("ACK NOT RECEIVED - TIMEOUT"));
+            apcOnAckTimeout();
             if (ackNotReceivedCallback) {
                 ackNotReceivedCallback(ackCallback_paylod);
             }
         }
+    }
+}
+
+// ==================== AUTOMATYCZNA REGULACJA MOCY (APC) ====================
+
+// Zadania zmiany mocy sa odkladane do apcPendingDbm i aplikowane w startSending,
+// tuz przed nadaniem kolejnej ramki. Bezposredni zapis rejestrow PA w trakcie
+// trwajacej transmisji (transmissionFinished == false, np. ACK odebrany, gdy
+// sendLoop juz nadaje kolejna wiadomosc z bufora) zmienilby moc W SRODKU ramki.
+void RadioManager::apcRequestPower(int8_t dbm) {
+    if (dbm > APC_MAX_DBM) dbm = APC_MAX_DBM;
+    if (dbm < TX_POWER_MIN_DBM) dbm = TX_POWER_MIN_DBM;
+    apcPendingDbm = (dbm == txPowerDbm) ? -1 : dbm; // ostatnie zadanie wygrywa
+}
+
+void RadioManager::apcOnAckPayload(const String &ackPayload) {
+    if (!APC_ENABLED) return;
+    ackMissStreak = 0;
+    int atPos = ackPayload.indexOf('@');
+    if (atPos < 0) return; // ACK ze starszego firmware - bez zwrotki RSSI
+    peerReportedRssi = atol(ackPayload.c_str() + atPos + 1);
+    peerRssiValid = true;
+    if (apcFrozen) return;
+    // Jeden krok na jedna zwrotke - tempo regulacji ogranicza naturalnie rytm
+    // wymian ACK, bez dodatkowego timera. Histereza tlumi skoki RSSI miedzy ramkami.
+    int8_t current = (apcPendingDbm >= 0) ? apcPendingDbm : txPowerDbm;
+    if (peerReportedRssi > APC_TARGET_RSSI_DBM + APC_HYSTERESIS_DB) {
+        apcRequestPower(current - APC_STEP_DB); // slychac nas az za dobrze - oszczedzaj
+    } else if (peerReportedRssi < APC_TARGET_RSSI_DBM - APC_HYSTERESIS_DB) {
+        apcRequestPower(current + APC_STEP_DB); // za cicho - doloz
+    }
+}
+
+void RadioManager::apcOnAckTimeout() {
+    if (!APC_ENABLED || apcFrozen) return;
+    if (ackMissStreak < 255) ackMissStreak++;
+    // Gdy nie jestesmy slyszani, nie ma kanalu zwrotnego - odzysk musi byc skokiem
+    // na sufit, nie krokami. Warunek == zamiast >= : komunikat i zadanie raz na serie.
+    if (ackMissStreak == APC_ACK_MISS_LIMIT) {
+        Serial.println(F("RadioManager | APC: brak ACK - skok na pelna moc"));
+        apcRequestPower(APC_MAX_DBM);
+    }
+}
+
+void RadioManager::setApcFrozen(bool frozen) {
+    if (!APC_ENABLED || frozen == apcFrozen) return;
+    apcFrozen = frozen;
+    if (frozen) {
+        // Transfer OTA: niezawodnosc wazniejsza niz oszczedzanie - przypnij sufit.
+        apcRequestPower(APC_MAX_DBM);
+        ackMissStreak = 0;
     }
 }
 
@@ -441,6 +499,15 @@ bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
 }
 
 bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested) {
+    // Odlozona zmiana mocy APC - tu transmissionFinished jest na pewno true
+    // (gwarantuje to sendLoop), wiec zapis rejestrow PA nie trafi w trwajaca ramke.
+    if (apcPendingDbm >= 0) {
+        setTxPower(apcPendingDbm);
+        apcPendingDbm = -1;
+        Serial.print(F("RadioManager | APC: moc "));
+        Serial.print(txPowerDbm);
+        Serial.println(F(" dBm"));
+    }
     DEBUGlog(F("Sending: ["));
     DEBUGlog(str);
     DEBUGlog(F("] to "));

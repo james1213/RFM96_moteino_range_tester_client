@@ -27,6 +27,9 @@
 // Za wysoka wartosc przy slabym zasilaniu = reset przy kazdym nadawaniu; widac to
 // w logu jako "[BOOT] Reset cause: BROWN_OUT". Moc mozna tez zmieniac w trakcie
 // pracy: manager->setTxPower(dbm) - obowiazuje od nastepnej transmisji.
+//
+// Przy wlaczonym APC (RadioManager.h) to tylko moc STARTOWA - dalej moc reguluje
+// sie sama wedlug RSSI raportowanego w ACK-ach przez druga strone.
 #define TX_POWER_DBM 20
 
 #if TX_POWER_DBM < TX_POWER_MIN_DBM || TX_POWER_DBM > TX_POWER_MAX_DBM
@@ -158,14 +161,18 @@ void setupDisplay() {
     oled.begin(&Adafruit128x32, OLED_I2C_ADDRESS);
     oled.setFont(System5x7);
     oled.clear();
-    oled.set2X(); // 2 wiersze po 16 px, czytelne z odleglosci; stan trwaly obiektu
-    oled.println(F("KLIENT"));
+    oled.set2X();
+    oled.println(F("KLIENT")); // wiersze 0-1 (2X); wiersz 2 zostaje zawsze pusty
+    oled.set1X();
+    oled.setCursor(0, 3);      // wiersz 3 (1X) - ten sam uklad co pozniejszy status
     oled.print(F("czekam..."));
     Serial.println(F("[OLED] 128x32 pod 0x3C gotowy"));
 }
 
-// Wyswietla numer z tresci testowej wiadomosci ("...[#123]...") i RSSI ramki,
-// w ktorej przyszla. Wiadomosci bez "[#" (nie-testowe) nie ruszaja ekranu.
+// Wyswietla: duzo (2X) numer z "[#N]" i RSSI ramki; malym fontem (wiersz 3) moc,
+// z jaka MY nadajemy, oraz moc, z jaka nadawca wyslal te wiadomosc (znacznik
+// "[PX]" doklejany do tresci testowej). Te moce NIE musza byc rowne - kazdy
+// kierunek reguluje sie niezaleznie. Wiadomosci bez "[#" nie ruszaja ekranu.
 void displayCountAndRssi(const String &str) {
     // Podczas transferu OTA nie dotykamy wyswietlacza: jeden zapis I2C to kilka ms
     // blokady petli glownej, a o niezawodnosc OTA walczylismy zbyt dlugo.
@@ -175,13 +182,25 @@ void displayCountAndRssi(const String &str) {
     const char *counter = strstr(payload, "[#"); // strstr zamiast String::indexOf - zero alokacji
     if (counter == nullptr) return;
     unsigned long updateStart = millis();
+    oled.set2X();
     oled.setCursor(0, 0);
     oled.print('#');
     oled.print(atol(counter + 2));
+    oled.print(' ');
+    oled.print(manager->getLastRssi()); // bez "dBm" - 2X miesci 10 znakow w linii
     oled.clearToEOL();
-    oled.setCursor(0, 2);
-    oled.print(manager->getLastRssi());
-    oled.print(F(" dBm"));
+    oled.set1X();
+    oled.setCursor(0, 3);
+    oled.print(F("ja:"));
+    oled.print((int) manager->getTxPower()); // int8_t bez rzutu trafilby w print(char)
+    oled.print(F("dBm on:"));
+    const char *peerPower = strstr(payload, "[P"); // moc nadawcy doslana w tresci
+    if (peerPower != nullptr) {
+        oled.print(atol(peerPower + 2));
+        oled.print(F("dBm"));
+    } else {
+        oled.print('?'); // wiadomosc ze starszego firmware - bez znacznika [P]
+    }
     oled.clearToEOL();
     // Normalna aktualizacja to ~20-25 ms; brak wyswietlacza to szybkie NACK-i.
     // Ale SDA/SCL zwarte do masy (realne w terenie) = kazdy bajt czeka na timeout
@@ -197,19 +216,25 @@ void displayCountAndRssi(const String &str) {
 void loop() {
     manager->loop();
 
+    // APC: na czas transferu OTA moc przypieta do sufitu, regulator zamrozony
+    // (wykrywanie zbocza w srodku - wolanie co obieg jest tanie).
+    manager->setApcFrozen(radioOta->isOtaInProgress());
+
     // Ruch testowy: wstrzymany, gdy trwa transfer OTA (isOtaInProgress), a gdy radio
     // jest chwilowo zajete (send() zwraca false), wiadomosc jest po prostu pomijana -
     // send() NIE nadpisuje juz po cichu zakolejkowanej ramki.
-    if (!radioOta->isOtaInProgress() && runEvery(2000)) {
+    if (!radioOta->isOtaInProgress() && runEvery(1000)) {
         Serial.println();
 
         String str;
-        // 38 (prefiks) + do 6 cyfr licznika + 51 (sufiks) = do 95 znakow. Za male
-        // reserve oznaczalo realokacje przy KAZDEJ wiadomosci - rezerwa musi
-        // pokrywac calosc, inaczej tylko podnosi szczyt zuzycia sterty.
-        str.reserve(96);
+        // 38 (prefiks) + do 6 cyfr licznika + "][P" + 2 cyfry mocy + 51 (sufiks)
+        // = do 100 znakow. Rezerwa musi pokrywac calosc, inaczej realokacja przy
+        // kazdej wiadomosci tylko podnosi szczyt zuzycia sterty.
+        str.reserve(100);
         str += F("Hello World from sender to receiver [#");
         str += count++;
+        str += F("][P"); // znacznik APC: moc, z jaka ta wiadomosc jest nadawana
+        str += (int) manager->getTxPower(); // int8_t bez rzutu trafilby w concat(char)
         str += F("] with ACK | test string 1234567890ABCDEFGHIJKLMNOP");
         Serial.print(F("Sending payload: \""));
         Serial.print(str);

@@ -23,6 +23,22 @@
 #define TX_POWER_FTDI_SAFE_DBM  10  // powyzej tego zasilanie z pinu 3V3 FTDI nie wyrabia
 #define TX_OCP_HIGH_POWER_MA    150 // limit pradu PA dla trybu >17 dBm (Semtech 5.4.3)
 
+// ==================== AUTOMATYCZNA REGULACJA MOCY (APC) ====================
+// Kazdy ACK niesie zwrotke "!<id>@<rssi>": RSSI, z jakim odbiorca uslyszal
+// kwitowana ramke. Nadawca reguluje SWOJA moc tak, by u odbiorcy trafic w okno
+// APC_TARGET_RSSI_DBM +- APC_HYSTERESIS_DB. Dwie niezalezne petle (po jednej na
+// kierunek) - bez zalozenia symetrii lacza, wiec bez sprzezenia regulatorow.
+// Stary parser ACK czyta "!<id>@<rssi>" poprawnie (toInt konczy na '@'),
+// dzieki czemu mieszane wersje firmware wspolpracuja w oknie flashowania OTA.
+#define APC_ENABLED           true
+#define APC_TARGET_RSSI_DBM   (-85) // cel: tak ma nas slyszec druga strona
+#define APC_HYSTERESIS_DB     5     // martwa strefa; RSSI i tak skacze o +-kilka dB
+#define APC_STEP_DB           2     // krok pojedynczej korekty
+#define APC_ACK_MISS_LIMIT    3     // tyle timeoutow ACK z rzedu -> skok na APC_MAX_DBM
+// Sufit eskalacji. UWAGA na zasilanie: przy 3V3 z FTDI ustaw TX_POWER_FTDI_SAFE_DBM,
+// inaczej automatyczny skok mocy przy slabym laczu wpedzi wezel w petle brown-outow.
+#define APC_MAX_DBM           TX_POWER_MAX_DBM
+
 
 class RadioManager {
 public:
@@ -60,6 +76,13 @@ public:
     uint8_t receivedMessageIdOfLastMessage = 0;
     volatile int receivedPacketSize = 0;
     int lastRssi = 0; // RSSI ostatnio odebranej ramki (dBm), lapany w readReceivedData
+
+    // Stan APC. peerReportedRssi = ostatnie "slychac cie na X dBm" ze zwrotki w ACK.
+    int peerReportedRssi = 0;
+    bool peerRssiValid = false;  // false = zadna zwrotka jeszcze nie dotarla
+    uint8_t ackMissStreak = 0;   // kolejne timeouty ACK; limit -> skok na pelna moc
+    bool apcFrozen = false;      // OTA: moc przypieta do sufitu, regulator spi
+    int8_t apcPendingDbm = -1;   // zadana moc czeka na przerwe miedzy ramkami (-1 = brak)
 
     int8_t txPowerDbm = 0;
     bool needToSendAckToSender = false;
@@ -106,6 +129,10 @@ public:
     void setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*receiveDoneCallback)(int), void(*txDoneCallback)());
     int8_t setTxPower(int8_t dbm);       // zwraca moc faktycznie ustawiona (po ograniczeniu do zakresu)
     int8_t getTxPower();
+    void apcOnAckPayload(const String &ackPayload); // zwrotka RSSI z ACK -> krok regulatora
+    void apcOnAckTimeout();                         // licznik strat ACK -> eskalacja mocy
+    void apcRequestPower(int8_t dbm);               // zadanie zmiany, aplikowane miedzy ramkami
+    void setApcFrozen(bool frozen);                 // true na czas OTA: sufit mocy + stop regulacji
     uint16_t getTxCurrentEstimate_mA();  // szacunkowy pobor pradu radia w czasie nadawania
     void printTxPower();
     void dumpRegisters();
