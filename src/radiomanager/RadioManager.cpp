@@ -194,7 +194,15 @@ void RadioManager::sendAck() {
     sendDirectly(ackString, senderIdOfLastMessage, false, nullptr, nullptr, true);
 }
 
+int RadioManager::getLastRssi() {
+    return lastRssi;
+}
+
 String RadioManager::readReceivedData() {
+    // RSSI odczytany zanim cokolwiek innego zdazy sie wydarzyc - rejestr PktRssiValue
+    // nadpisuje dopiero kolejny odebrany pakiet. Kontekst petli glownej (nie ISR),
+    // wiec dostep po SPI jest bezpieczny.
+    lastRssi = LoRa.packetRssi();
     String str = "";
     str.reserve(receivedPacketSize + 1); // jedna alokacja zamiast realokacji przy kazdym znaku
 //    for(int & receivedByte : receivedBytes) {
@@ -237,20 +245,22 @@ String RadioManager::readReceivedData() {
 //        DEBUGlog(F("[RFM96] SendeId:\t\t"));
 //        DEBUGlogln(radio.getSenderId());
 
-    // print RSSI (Received Signal Strength Indicator)
-    DEBUGlog(F("[RFM96] RSSI:\t\t"));
-    DEBUGlog(LoRa.packetRssi());
-    DEBUGlogln(F(" dBm"));
+    // Calosc pod if: DEBUGlog wycisza tylko wydruk, argumenty i tak by sie policzyly,
+    // a packetSnr/packetFrequencyError to lacznie ~5 odczytow rejestrow po SPI na
+    // KAZDA odebrana ramke (takze kazdy pakiet OTA). RSSI mamy juz w lastRssi.
+    if (LOG_ACTIVE) {
+        DEBUGlog(F("[RFM96] RSSI:\t\t"));
+        DEBUGlog(lastRssi);
+        DEBUGlogln(F(" dBm"));
 
-    // print SNR (Signal-to-Noise Ratio)
-    DEBUGlog(F("[RFM96] SNR:\t\t"));
-    DEBUGlog(LoRa.packetSnr());
-    DEBUGlogln(F(" dB"));
+        DEBUGlog(F("[RFM96] SNR:\t\t"));
+        DEBUGlog(LoRa.packetSnr());
+        DEBUGlogln(F(" dB"));
 
-    // print frequency error
-    DEBUGlog(F("[RFM96] Frequency error:\t"));
-    DEBUGlog(LoRa.packetFrequencyError());
-    DEBUGlogln(F(" Hz"));
+        DEBUGlog(F("[RFM96] Frequency error:\t"));
+        DEBUGlog(LoRa.packetFrequencyError());
+        DEBUGlogln(F(" Hz"));
+    }
 
     return str;
 }

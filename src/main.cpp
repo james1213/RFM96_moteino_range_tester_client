@@ -6,6 +6,11 @@
 #include "ota/RadioOta.h"
 //#include <CRC32.h>
 
+// Wyswietlacz OLED 0,91" 128x32 (SSD1306) na I2C (A4=SDA, A5=SCL), adres 0x3C.
+// SSD1306Ascii celowo: nie trzyma framebuffera (128x32/8 = 512 B, czwarta czesc
+// calego RAM), pisze znaki wprost do pamieci wyswietlacza.
+#include <SSD1306AsciiAvrI2c.h>
+
 #define NODE_ID 0x01
 
 // ==================== MOC NADAJNIKA ====================
@@ -55,6 +60,10 @@ SPIFlash flash(SS_FLASHMEM, 0xEF30); //EF30 for 4mbit  Windbond chip (W25X40CL)
 RadioManager *manager = new RadioManager();
 RadioOta *radioOta = new RadioOta(manager);
 
+#define OLED_I2C_ADDRESS 0x3C
+SSD1306AsciiAvrI2c oled;
+bool oledPresent = false;
+
 boolean runEvery(unsigned long interval);
 
 
@@ -64,6 +73,10 @@ void setupRadio();
 
 void setupFlash();
 
+void setupDisplay();
+
+void displayCountAndRssi(const String &str);
+
 void dataReceived(String &str, uint8_t senderId);
 
 void setup() {
@@ -72,6 +85,7 @@ void setup() {
     printResetCause();
     setupRadio();
     setupFlash();
+    setupDisplay();
     delay(5000);
 }
 
@@ -127,6 +141,58 @@ void setupSerial() {
     while (!Serial);
 }
 
+void setupDisplay() {
+    // Slabe wewnetrzne pull-upy na SDA/SCL: bez podlaczonego wyswietlacza magistrala
+    // nie plywa i sonda dostaje czysty NACK zamiast serii timeoutow TWI. Z modulem
+    // OLED dominuja jego wlasne rezystory 4,7k-10k, wiec nic nie psuja.
+    pinMode(SDA, INPUT_PULLUP);
+    pinMode(SCL, INPUT_PULLUP);
+    AvrI2c probe;
+    probe.begin(false); // 100 kHz wystarczy do sondowania
+    oledPresent = probe.start((OLED_I2C_ADDRESS << 1) | 0); // ACK = wyswietlacz jest
+    probe.stop();
+    if (!oledPresent) {
+        Serial.println(F("[OLED] brak wyswietlacza pod 0x3C - wyswietlanie wylaczone"));
+        return;
+    }
+    oled.begin(&Adafruit128x32, OLED_I2C_ADDRESS);
+    oled.setFont(System5x7);
+    oled.clear();
+    oled.set2X(); // 2 wiersze po 16 px, czytelne z odleglosci; stan trwaly obiektu
+    oled.println(F("KLIENT"));
+    oled.print(F("czekam..."));
+    Serial.println(F("[OLED] 128x32 pod 0x3C gotowy"));
+}
+
+// Wyswietla numer z tresci testowej wiadomosci ("...[#123]...") i RSSI ramki,
+// w ktorej przyszla. Wiadomosci bez "[#" (nie-testowe) nie ruszaja ekranu.
+void displayCountAndRssi(const String &str) {
+    // Podczas transferu OTA nie dotykamy wyswietlacza: jeden zapis I2C to kilka ms
+    // blokady petli glownej, a o niezawodnosc OTA walczylismy zbyt dlugo.
+    if (!oledPresent || radioOta->isOtaInProgress()) return;
+    const char *payload = str.c_str(); // String uniewazniony przez OOM ma bufor NULL
+    if (payload == nullptr) return;
+    const char *counter = strstr(payload, "[#"); // strstr zamiast String::indexOf - zero alokacji
+    if (counter == nullptr) return;
+    unsigned long updateStart = millis();
+    oled.setCursor(0, 0);
+    oled.print('#');
+    oled.print(atol(counter + 2));
+    oled.clearToEOL();
+    oled.setCursor(0, 2);
+    oled.print(manager->getLastRssi());
+    oled.print(F(" dBm"));
+    oled.clearToEOL();
+    // Normalna aktualizacja to ~20-25 ms; brak wyswietlacza to szybkie NACK-i.
+    // Ale SDA/SCL zwarte do masy (realne w terenie) = kazdy bajt czeka na timeout
+    // TWI ~37 ms, czyli ~30 s blokady petli na kazda ramke. Wykrywamy i wylaczamy;
+    // powrot wyswietlacza dopiero po resecie.
+    if (millis() - updateStart > 100) {
+        oledPresent = false;
+        Serial.println(F("[OLED] magistrala I2C nie odpowiada - wyswietlanie wylaczone"));
+    }
+}
+
 
 void loop() {
     manager->loop();
@@ -138,7 +204,10 @@ void loop() {
         Serial.println();
 
         String str;
-        str.reserve(80);
+        // 38 (prefiks) + do 6 cyfr licznika + 51 (sufiks) = do 95 znakow. Za male
+        // reserve oznaczalo realokacje przy KAZDEJ wiadomosci - rezerwa musi
+        // pokrywac calosc, inaczej tylko podnosi szczyt zuzycia sterty.
+        str.reserve(96);
         str += F("Hello World from sender to receiver [#");
         str += count++;
         str += F("] with ACK | test string 1234567890ABCDEFGHIJKLMNOP");
@@ -164,6 +233,7 @@ void dataReceived(String &str, uint8_t senderId) {
     Serial.print(str);
     Serial.print(F("\" from senderId: "));
     Serial.println(senderId);
+    displayCountAndRssi(str);
 }
 
 

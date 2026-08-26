@@ -59,6 +59,7 @@ public:
     uint8_t senderIdOfLastMessage = 0;
     uint8_t receivedMessageIdOfLastMessage = 0;
     volatile int receivedPacketSize = 0;
+    int lastRssi = 0; // RSSI ostatnio odebranej ramki (dBm), lapany w readReceivedData
 
     int8_t txPowerDbm = 0;
     bool needToSendAckToSender = false;
@@ -100,6 +101,7 @@ public:
     void setSendAckAutomaticly(bool value);
     bool isAckReceived();
     uint8_t getSenderIdOfLastMessage();
+    int getLastRssi();
     bool isTransmissionFinished();
     void setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*receiveDoneCallback)(int), void(*txDoneCallback)());
     int8_t setTxPower(int8_t dbm);       // zwraca moc faktycznie ustawiona (po ograniczeniu do zakresu)
