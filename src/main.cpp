@@ -27,7 +27,7 @@
 // Za wysoka wartosc przy slabym zasilaniu = reset przy kazdym nadawaniu; widac to
 // w logu jako "[BOOT] Reset cause: BROWN_OUT". Moc mozna tez zmieniac w trakcie
 // pracy: manager->setTxPower(dbm) - obowiazuje od nastepnej transmisji.
-#define TX_POWER_DBM 2
+#define TX_POWER_DBM 20
 
 #if TX_POWER_DBM < TX_POWER_MIN_DBM || TX_POWER_DBM > TX_POWER_MAX_DBM
 #error "TX_POWER_DBM poza zakresem - dozwolone 2..20 dBm (PA_BOOST)"
