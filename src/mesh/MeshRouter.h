@@ -30,7 +30,9 @@
 //   - ACK tylko skok po skoku; potwierdzenie "OK" u nadawcy oznacza dotarcie do
 //     PIERWSZEGO posrednika, nie do celu.
 //   - OTA nie przechodzi przez mesh - zostaje bezposrednie (klient -> cel).
-//   - Split horizon nie jest potrzebny przy numerach sekwencyjnych i tej skali.
+//   - Metryka nie niesie liczby skokow, wiec trasy dluzsze niz MESH_MAX_TTL moga
+//     zostac wyuczone - dane na nich zgina na TTL mimo poprawnych ACK skokowych.
+//     Przy skali <= 4 wezlow bez znaczenia.
 //
 
 #ifndef RFM96_MESH_ROUTER_H
@@ -45,7 +47,8 @@
                                         // jest KAZDA odebrana od niego ramka, nie sam beacon
 #define MESH_MAX_NEIGHBORS        4
 #define MESH_MAX_ROUTES           6
-#define MESH_DEDUP_SIZE           8
+#define MESH_DEDUP_SIZE           16 // musi pokryc horyzont retransmisji (~3 s watchdoga ACK)
+                                     // przy kilku wpisach/s na ruchliwym relayu
 #define MESH_MAX_TTL              4     // max skokow; dobija ramki, ktore ucieka dedupowi
 #define MESH_HOP_RETRIES          2     // ponowienia jednego skoku (po ACK-timeoucie radia)
 #define MESH_METRIC_INFINITY      255
@@ -102,11 +105,21 @@ private:
     uint8_t hopDest = 0;
     void (*appOkCallback)() = nullptr;              // callback aplikacji dla wlasnej wysylki
     void (*appFailCallback)(String &payload) = nullptr;
+    // Timeout ACK trafil w zajete radio: ponowienie odlozone, obslugiwane w loop().
+    bool hopRetryPending = false;
+    unsigned long hopRetryAtMillis = 0;
+    unsigned long hopRetryDeadlineMillis = 0;
+    // Jedno gniazdo odlozonego forwardu: relay dostal ramke w trakcie wlasnej
+    // transakcji ACK, a poprzedni skok juz ja potwierdzil - nikt jej nie ponowi.
+    String pendingForwardFrame;
+    uint8_t pendingForwardHop = 0;
+    unsigned long pendingForwardDeadline = 0;
 
     static MeshRouter *instance;        // trampolina dla callbackow bez kontekstu
     static void sHopAckOk();
     static void sHopAckFail(String &taggedPayload);
     void hopAckFail(String &taggedPayload);
+    void giveUpHop();
 
     bool sendBeacon();
     void handleBeacon(const char *body, uint8_t radioSender);

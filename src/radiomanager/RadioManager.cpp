@@ -369,9 +369,14 @@ void RadioManager::waitForAckTimeoutLoop() {
     // Zgłaszamy to normalna sciezka bledu, zeby warstwa wyzej (mesh) zadzialala.
     if (waitingForAck && millis() - waitForAckStartTime >= ackTimeout * 3) {
         Serial.println(F("RadioManager | ACK watchdog: zwalniam zakleszczone flagi"));
+        // Jesli uzbrojona ramka wciaz tkwi w buforze, zdejmij jej zadanie ACK -
+        // wyjdzie w eter jako zwykla ramka, zamiast nadac sie PO zgloszonym bledzie
+        // i sciagnac spozniony ACK bez pary.
+        if (ackFramePendingTx && sendBuffer.length() > 0) sendBufferAckReq = false;
         waitingForAck = false;
         ackFramePendingTx = false;
         pendingAckMessageId = 0;
+        apcOnAckTimeout(); // strata jak kazda inna - APC ma ja widziec
         if (ackNotReceivedCallback) {
             ackNotReceivedCallback(ackCallback_paylod);
         }
@@ -446,8 +451,10 @@ void RadioManager::setApcFrozen(bool frozen) {
         ackMissStreak = 0;
         // ackCallback_paylod trzyma pelna kopie ostatniej wiadomosci z zadaniem ACK
         // (nawet ~100 B) i nigdy nie jest czyszczone - na czas OTA oddajemy ten RAM,
-        // bo transfer chodzi na granicy __malloc_margin.
-        ackCallback_paylod = "";
+        // bo transfer chodzi na granicy __malloc_margin. ALE nie w trakcie otwartej
+        // transakcji: to payload ewentualnego ponowienia skoku - wyczyszczenie go
+        // tutaj produkowalo puste ramki-zombie w callbacku niedoszlego ACK.
+        if (!waitingForAck) ackCallback_paylod = "";
     }
 }
 
@@ -521,6 +528,14 @@ bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
     // startSending(..., false), wiec ackRequested=true z useAckBuffer=true
     // zostawiloby ackFramePendingTx na zawsze i zablokowalo timeout ACK.
     if (useAckBuffer) ackRequested = false;
+    // Pusta ramka nigdy nie moze uzbroic transakcji: sendLoop nadaje tylko niepuste
+    // bufory, wiec ksiegowosc ACK dla pustej ramki wisialaby az do watchdoga.
+    // Zrodlem pustych ramek byl OOM Stringa (cicha inwalidacja ackCallback_paylod)
+    // podawany z powrotem do ponowienia skoku przez mesh.
+    if (str.length() == 0) {
+        DEBUGlogln(F("RadioManager | pusta ramka - odrzucam"));
+        return false;
+    }
     if (!useAckBuffer) {
         if (sendBuffer.length() > 0) {
             DEBUGlogln(F("RadioManager | busy: sendBuffer occupied"));
@@ -587,17 +602,10 @@ bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
     DEBUGlog(F("] to "));
     DEBUGlogln(address);
     unsigned long startTime = micros();
-    messageId++;
-    if (messageId == 0) messageId = 1;
-    if (ackRequested) {
-        pendingAckMessageId = messageId; // to id trafia do ramki i wroci w "!id"
-        // Okno ACK liczymy od faktycznego nadania, nie od zakolejkowania. Ramka mogla
-        // czekac w buforze (np. az watchdog odblokuje zawieszony TX) - ze stemplem
-        // z chwili zakolejkowania okno wygasaloby w momencie startu nadawania i
-        // timeout zerowalby pendingAckMessageId tuz przed nadejsciem prawdziwego ACK.
-        waitForAckStartTime = millis();
-        ackFramePendingTx = false;
-    }
+    // Rezerwacja PRZED jakakolwiek zmiana ksiegowosci ACK. W odwrotnej kolejnosci
+    // uporczywy brak RAM oznaczal restemplowanie waitForAckStartTime przy kazdym
+    // obiegu petli - ani timeout, ani watchdog ACK nigdy by nie strzelily, a
+    // messageId przewijalby sie na pusto, umozliwiajac dopasowanie spoznionego ACK.
     String frame;
     if (!frame.reserve(str.length() + 16)) { // naglowek "adr@nadawca@id@ack@" + '`'
         // Komunikat rzadziej niz raz na sekunde - inaczej przy ciasnej stercie zalewalby
@@ -609,6 +617,17 @@ bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
             Serial.println(F(" B) - ponawiam"));
         }
         return false;
+    }
+    messageId++;
+    if (messageId == 0) messageId = 1;
+    if (ackRequested) {
+        pendingAckMessageId = messageId; // to id trafia do ramki i wroci w "!id"
+        // Okno ACK liczymy od faktycznego nadania, nie od zakolejkowania. Ramka mogla
+        // czekac w buforze (np. az watchdog odblokuje zawieszony TX) - ze stemplem
+        // z chwili zakolejkowania okno wygasaloby w momencie startu nadawania i
+        // timeout zerowalby pendingAckMessageId tuz przed nadejsciem prawdziwego ACK.
+        waitForAckStartTime = millis();
+        ackFramePendingTx = false;
     }
     frame += String(address);
     frame += '@';
