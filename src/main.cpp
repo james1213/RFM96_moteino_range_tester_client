@@ -32,6 +32,11 @@
 // sie sama wedlug RSSI raportowanego w ACK-ach przez druga strone.
 #define TX_POWER_DBM 20
 
+// Sufit automatycznej eskalacji APC (skok przy stratach ACK i na czas transferu OTA).
+// UWAGA: przy zasilaniu z pinu 3V3 FTDI ustaw najwyzej TX_POWER_FTDI_SAFE_DBM (10) -
+// inaczej automat sam, bez udzialu TX_POWER_DBM, wpedzi plytke w petle brown-outow.
+#define APC_CEILING_DBM 20
+
 #if TX_POWER_DBM < TX_POWER_MIN_DBM || TX_POWER_DBM > TX_POWER_MAX_DBM
 #error "TX_POWER_DBM poza zakresem - dozwolone 2..20 dBm (PA_BOOST)"
 #endif
@@ -112,6 +117,7 @@ void setupRadio() {
                         });
 
     manager->setTxPower(TX_POWER_DBM);
+    manager->setApcMaxPower(APC_CEILING_DBM);
     manager->printTxPower();
 
     manager->dumpRegisters();
@@ -223,7 +229,11 @@ void loop() {
     // Ruch testowy: wstrzymany, gdy trwa transfer OTA (isOtaInProgress), a gdy radio
     // jest chwilowo zajete (send() zwraca false), wiadomosc jest po prostu pomijana -
     // send() NIE nadpisuje juz po cichu zakolejkowanej ramki.
-    if (!radioOta->isOtaInProgress() && runEvery(1000)) {
+    if (!radioOta->isOtaInProgress() && runEvery(1000 + (micros() & 0xFF))) {
+        // Jitter 0-255 ms: oba wezly nadaja "co sekunde", wiec bez niego potrafia
+        // zsynchronizowac sie tak, ze ich ACK-i (wyzwalane odbiorem) leca rownoczesnie
+        // i zderzaja sie w eterze co cykl - kwarce dryfuja zbyt wolno, by fazy same
+        // sie rozeszly. Widziane na sprzecie: kazda wymiana konczyla sie timeoutem.
         Serial.println();
 
         String str;
@@ -234,7 +244,7 @@ void loop() {
         str += F("Hello World from sender to receiver [#");
         str += count++;
         str += F("][P"); // znacznik APC: moc, z jaka ta wiadomosc jest nadawana
-        str += (int) manager->getTxPower(); // int8_t bez rzutu trafilby w concat(char)
+        str += (int) manager->getEffectiveTxPower(); // moc FAKTYCZNEGO nadania; int8_t bez rzutu trafilby w concat(char)
         str += F("] with ACK | test string 1234567890ABCDEFGHIJKLMNOP");
         Serial.print(F("Sending payload: \""));
         Serial.print(str);

@@ -352,9 +352,22 @@ void RadioManager::waitForAckTimeoutLoop() {
 // trwajacej transmisji (transmissionFinished == false, np. ACK odebrany, gdy
 // sendLoop juz nadaje kolejna wiadomosc z bufora) zmienilby moc W SRODKU ramki.
 void RadioManager::apcRequestPower(int8_t dbm) {
-    if (dbm > APC_MAX_DBM) dbm = APC_MAX_DBM;
+    if (dbm > apcMaxDbm) dbm = apcMaxDbm;
     if (dbm < TX_POWER_MIN_DBM) dbm = TX_POWER_MIN_DBM;
     apcPendingDbm = (dbm == txPowerDbm) ? -1 : dbm; // ostatnie zadanie wygrywa
+}
+
+void RadioManager::setApcMaxPower(int8_t dbm) {
+    if (dbm > TX_POWER_MAX_DBM) dbm = TX_POWER_MAX_DBM;
+    if (dbm < TX_POWER_MIN_DBM) dbm = TX_POWER_MIN_DBM;
+    apcMaxDbm = dbm;
+}
+
+// Moc, z jaka wyjdzie NASTEPNA ramka: zmiana zadana przez APC moze jeszcze czekac
+// w apcPendingDbm na przerwe miedzy ramkami - znacznik [P] w tresci wiadomosci musi
+// opisywac moc FAKTYCZNEGO nadania, nie stan sprzed zmiany.
+int8_t RadioManager::getEffectiveTxPower() {
+    return (apcPendingDbm >= 0) ? apcPendingDbm : txPowerDbm;
 }
 
 void RadioManager::apcOnAckPayload(const String &ackPayload) {
@@ -362,7 +375,12 @@ void RadioManager::apcOnAckPayload(const String &ackPayload) {
     ackMissStreak = 0;
     int atPos = ackPayload.indexOf('@');
     if (atPos < 0) return; // ACK ze starszego firmware - bez zwrotki RSSI
-    peerReportedRssi = atol(ackPayload.c_str() + atPos + 1);
+    long reported = atol(ackPayload.c_str() + atPos + 1);
+    // RSSI >= 0 dBm jest fizycznie niemozliwe dla LoRa: to obcieta zwrotka ("!17@"
+    // po cichym OOM u peera daje atol("") == 0) albo smieci. Regulowanie wedlug takiej
+    // wartosci sciagaloby moc W DOL dokladnie wtedy, gdy peerowi brakuje pamieci.
+    if (reported >= 0) return;
+    peerReportedRssi = (int) reported;
     peerRssiValid = true;
     if (apcFrozen) return;
     // Jeden krok na jedna zwrotke - tempo regulacji ogranicza naturalnie rytm
@@ -382,7 +400,7 @@ void RadioManager::apcOnAckTimeout() {
     // na sufit, nie krokami. Warunek == zamiast >= : komunikat i zadanie raz na serie.
     if (ackMissStreak == APC_ACK_MISS_LIMIT) {
         Serial.println(F("RadioManager | APC: brak ACK - skok na pelna moc"));
-        apcRequestPower(APC_MAX_DBM);
+        apcRequestPower(apcMaxDbm);
     }
 }
 
@@ -391,7 +409,7 @@ void RadioManager::setApcFrozen(bool frozen) {
     apcFrozen = frozen;
     if (frozen) {
         // Transfer OTA: niezawodnosc wazniejsza niz oszczedzanie - przypnij sufit.
-        apcRequestPower(APC_MAX_DBM);
+        apcRequestPower(apcMaxDbm);
         ackMissStreak = 0;
     }
 }

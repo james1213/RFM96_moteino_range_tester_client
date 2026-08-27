@@ -83,6 +83,7 @@ public:
     uint8_t ackMissStreak = 0;   // kolejne timeouty ACK; limit -> skok na pelna moc
     bool apcFrozen = false;      // OTA: moc przypieta do sufitu, regulator spi
     int8_t apcPendingDbm = -1;   // zadana moc czeka na przerwe miedzy ramkami (-1 = brak)
+    int8_t apcMaxDbm = APC_MAX_DBM; // sufit eskalacji, konfigurowalny per wezel (setApcMaxPower)
 
     int8_t txPowerDbm = 0;
     bool needToSendAckToSender = false;
@@ -133,6 +134,8 @@ public:
     void apcOnAckTimeout();                         // licznik strat ACK -> eskalacja mocy
     void apcRequestPower(int8_t dbm);               // zadanie zmiany, aplikowane miedzy ramkami
     void setApcFrozen(bool frozen);                 // true na czas OTA: sufit mocy + stop regulacji
+    void setApcMaxPower(int8_t dbm);                // sufit eskalacji (FTDI: TX_POWER_FTDI_SAFE_DBM!)
+    int8_t getEffectiveTxPower();                   // moc, z jaka wyjdzie NASTEPNA ramka
     uint16_t getTxCurrentEstimate_mA();  // szacunkowy pobor pradu radia w czasie nadawania
     void printTxPower();
     void dumpRegisters();
