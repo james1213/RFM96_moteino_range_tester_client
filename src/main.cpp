@@ -179,7 +179,16 @@ void setupDisplay() {
 // z jaka MY nadajemy, oraz moc, z jaka nadawca wyslal te wiadomosc (znacznik
 // "[PX]" doklejany do tresci testowej). Te moce NIE musza byc rowne - kazdy
 // kierunek reguluje sie niezaleznie. Wiadomosci bez "[#" nie ruszaja ekranu.
+//
+// Rysowanie jest ROZNICOWE: gorna linia trzyma poprzednia klatke i przepisuje
+// wylacznie zmienione komorki znakowe (zwykle 1-2 cyfry, ~1-2 ms), a linia mocy
+// przerysowuje sie tylko przy faktycznej zmianie ktorejs z mocy. Przepisywanie
+// calej linii co sekunde bylo widoczne jako mruganie ekranu.
 void displayCountAndRssi(const String &str) {
+    static char prevTopLine[11] = "";  // poprzednia klatka gornej linii (10 komorek 2X po 12 px)
+    static int8_t prevOwnPower = -1;   // -1 = jeszcze nic nie narysowano
+    static int prevPeerPower = -128;   // -128 = znacznika [P] nie bylo ("?")
+
     // Podczas transferu OTA nie dotykamy wyswietlacza: jeden zapis I2C to kilka ms
     // blokady petli glownej, a o niezawodnosc OTA walczylismy zbyt dlugo.
     if (!oledPresent || radioOta->isOtaInProgress()) return;
@@ -188,26 +197,44 @@ void displayCountAndRssi(const String &str) {
     const char *counter = strstr(payload, "[#"); // strstr zamiast String::indexOf - zero alokacji
     if (counter == nullptr) return;
     unsigned long updateStart = millis();
+
+    // Gorna linia (2X): "#<licznik> <rssi>". Komorki za koncem tekstu dopelniamy
+    // spacjami - to zastepuje clearToEOL i przy okazji przykrywa napis startowy.
+    char topLine[11];
+    snprintf(topLine, sizeof(topLine), "#%ld %d", atol(counter + 2), manager->getLastRssi());
     oled.set2X();
-    oled.setCursor(0, 0);
-    oled.print('#');
-    oled.print(atol(counter + 2));
-    oled.print(' ');
-    oled.print(manager->getLastRssi()); // bez "dBm" - 2X miesci 10 znakow w linii
-    oled.clearToEOL();
-    oled.set1X();
-    oled.setCursor(0, 3);
-    oled.print(F("ja:"));
-    oled.print((int) manager->getTxPower()); // int8_t bez rzutu trafilby w print(char)
-    oled.print(F("dBm on:"));
-    const char *peerPower = strstr(payload, "[P"); // moc nadawcy doslana w tresci
-    if (peerPower != nullptr) {
-        oled.print(atol(peerPower + 2));
-        oled.print(F("dBm"));
-    } else {
-        oled.print('?'); // wiadomosc ze starszego firmware - bez znacznika [P]
+    bool textEnded = false;
+    for (uint8_t i = 0; i < 10; i++) {
+        if (topLine[i] == '\0') textEnded = true;
+        char c = textEnded ? ' ' : topLine[i];
+        if (c != prevTopLine[i]) {
+            oled.setCursor(i * 12, 0);
+            oled.write(c);
+            prevTopLine[i] = c;
+        }
     }
-    oled.clearToEOL();
+
+    // Linia mocy (1X, wiersz 3): przerysowanie tylko przy zmianie wartosci.
+    int8_t ownPower = manager->getTxPower();
+    int peerPower = -128;
+    const char *peerMarker = strstr(payload, "[P"); // moc nadawcy doslana w tresci
+    if (peerMarker != nullptr) peerPower = (int) atol(peerMarker + 2);
+    if (ownPower != prevOwnPower || peerPower != prevPeerPower) {
+        prevOwnPower = ownPower;
+        prevPeerPower = peerPower;
+        oled.set1X();
+        oled.setCursor(0, 3);
+        oled.print(F("ja:"));
+        oled.print((int) ownPower); // int8_t bez rzutu trafilby w print(char)
+        oled.print(F("dBm on:"));
+        if (peerPower == -128) {
+            oled.print('?'); // wiadomosc ze starszego firmware - bez znacznika [P]
+        } else {
+            oled.print(peerPower);
+            oled.print(F("dBm"));
+        }
+        oled.clearToEOL(); // domiata ogon "czekam..." i dluzsze poprzednie wartosci
+    }
     // Normalna aktualizacja to ~20-25 ms; brak wyswietlacza to szybkie NACK-i.
     // Ale SDA/SCL zwarte do masy (realne w terenie) = kazdy bajt czeka na timeout
     // TWI ~37 ms, czyli ~30 s blokady petli na kazda ramke. Wykrywamy i wylaczamy;
