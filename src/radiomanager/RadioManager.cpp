@@ -93,12 +93,18 @@ void RadioManager::sendLoop() {
             DEBUGlogln(F("[RFM96] Sending another packet ... "));
             if (!ackSendBuffer.equals("")) {
                 DEBUGlogln(F("[RFM96] Sending ACK packet ... "));
+                frameTxPwrOverride = -1; // ACK-i zawsze moca regulowana
                 if (startSending(ackSendBuffer, ackSendBufferDest, false)) ackSendBuffer = "";
             } else {
                 DEBUGlogln(F("[RFM96] Sending normal packet ... "));
                 // Bufor zostaje przy niepowodzeniu - kolejny obieg petli sprobuje ponownie,
-                // zamiast po cichu gubic pakiet.
-                if (startSending(sendBuffer, sendBufferDest, sendBufferAckReq)) sendBuffer = "";
+                // zamiast po cichu gubic pakiet (razem z ewentualnym wymuszeniem mocy).
+                frameTxPwrOverride = sendBufferTxPwrOverride;
+                if (startSending(sendBuffer, sendBufferDest, sendBufferAckReq)) {
+                    sendBuffer = "";
+                    sendBufferTxPwrOverride = -1;
+                }
+                frameTxPwrOverride = -1;
             }
         }
     }
@@ -125,11 +131,19 @@ void RadioManager::receiveLoop() {
         DEBUGlog(F("[ACK] | after extractMessageIdAndSenderIdAndDestinationIdFromReceivedData = "));
         DEBUGlogln(str);
 
-        if (destinationIdOfLastMessage == nodeId) {
+        if (destinationIdOfLastMessage == nodeId
+            || destinationIdOfLastMessage == RADIO_BROADCAST_ID) {
             DEBUGlogln(F("This is a destination address"));
         } else {
             DEBUGlogln(F("This is not a destination address, ignoring message"));
             return;
+        }
+
+        // KAZDA poprawnie zaadresowana ramka (dane, ACK, beacon) jest dowodem, ze
+        // lacze od nadawcy zyje - mesh odswieza tym swoich sasiadow, zeby zgubione
+        // beacony (broadcast bez ACK, gina w kolizjach) nie usmiercaly zywych tras.
+        if (anyFrameReceivedCallback && senderIdOfLastMessage != 0) {
+            anyFrameReceivedCallback(senderIdOfLastMessage);
         }
 
         if (isAckPayloadAndValidMessageId(str) && waitingForAck) {
@@ -172,6 +186,11 @@ void RadioManager::receiveLoop() {
                 str = str.substring(5);
                 if (otaDataReceivedCallback) {
                     otaDataReceivedCallback(str, senderIdOfLastMessage);
+                }
+            } else if (isMeshPayload(str)) {
+                str = str.substring(5);
+                if (meshDataReceivedCallback) {
+                    meshDataReceivedCallback(str, senderIdOfLastMessage);
                 }
             } else if (isDataPayload(str)){
                 DEBUGlogln(F("Received DATA message"));
@@ -343,6 +362,20 @@ void RadioManager::waitForAckTimeoutLoop() {
             }
         }
     }
+    // Bezpiecznik ostateczny: zadna kombinacja flag nie ma prawa trzymac waitingForAck
+    // dluzej niz 3x timeout (ramka w buforze nadaje sie najpozniej po 2 s dzieki
+    // txStuckWatchdog). Widziane na sprzecie jako trwale zakleszczenie po zbiegu
+    // restartow obu wezlow: wysylki wiecznie "pominiete", timeout nigdy nie strzelal.
+    // Zgłaszamy to normalna sciezka bledu, zeby warstwa wyzej (mesh) zadzialala.
+    if (waitingForAck && millis() - waitForAckStartTime >= ackTimeout * 3) {
+        Serial.println(F("RadioManager | ACK watchdog: zwalniam zakleszczone flagi"));
+        waitingForAck = false;
+        ackFramePendingTx = false;
+        pendingAckMessageId = 0;
+        if (ackNotReceivedCallback) {
+            ackNotReceivedCallback(ackCallback_paylod);
+        }
+    }
 }
 
 // ==================== AUTOMATYCZNA REGULACJA MOCY (APC) ====================
@@ -411,6 +444,10 @@ void RadioManager::setApcFrozen(bool frozen) {
         // Transfer OTA: niezawodnosc wazniejsza niz oszczedzanie - przypnij sufit.
         apcRequestPower(apcMaxDbm);
         ackMissStreak = 0;
+        // ackCallback_paylod trzyma pelna kopie ostatniej wiadomosci z zadaniem ACK
+        // (nawet ~100 B) i nigdy nie jest czyszczone - na czas OTA oddajemy ten RAM,
+        // bo transfer chodzi na granicy __malloc_margin.
+        ackCallback_paylod = "";
     }
 }
 
@@ -456,6 +493,17 @@ bool RadioManager::sendTagged(String &taggedPayload, uint8_t address,
     return sendDirectly(taggedPayload, address,
                         _ackReceivedCallback || _ackNotReceivedCallback,
                         _ackReceivedCallback, _ackNotReceivedCallback, false);
+}
+
+// Ramka bez ACK z wymuszona moca nadania (beacony mesh ida na suficie, zeby
+// odlegle wezly slyszaly nas nawet, gdy APC wyregulowal moc danych w dol).
+// Override trzeba ustawic PRZED sendDirectly - ono konczy sie wywolaniem
+// sendLoop(), wiec ramka moze odjechac jeszcze w tym samym wywolaniu.
+bool RadioManager::sendTaggedAtPower(String &taggedPayload, uint8_t address, int8_t txPowerDbmOverride) {
+    sendBufferTxPwrOverride = txPowerDbmOverride;
+    bool queued = sendDirectly(taggedPayload, address, false, nullptr, nullptr, false);
+    if (!queued) sendBufferTxPwrOverride = -1;
+    return queued;
 }
 
 bool RadioManager::send(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
@@ -525,6 +573,14 @@ bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
         Serial.print(F("RadioManager | APC: moc "));
         Serial.print(txPowerDbm);
         Serial.println(F(" dBm"));
+    }
+    // Wymuszona moc pojedynczej ramki (beacon mesh na suficie): ustaw na te ramke,
+    // a powrot do mocy regulowanej odloz do nastepnej - chyba ze APC zdazy o cos
+    // poprosic, wtedy jego zadanie ma pierwszenstwo.
+    if (frameTxPwrOverride >= 0 && frameTxPwrOverride != txPowerDbm) {
+        int8_t restore = txPowerDbm;
+        setTxPower(frameTxPwrOverride);
+        if (apcPendingDbm < 0) apcPendingDbm = restore;
     }
     DEBUGlog(F("Sending: ["));
     DEBUGlog(str);
@@ -720,6 +776,20 @@ void RadioManager::printTxPower() {
 
 void RadioManager::onOtaDataReceived(void (*callback)(String &, uint8_t)) {
     otaDataReceivedCallback = callback;
+}
+
+void RadioManager::onMeshDataReceived(void (*callback)(String &, uint8_t)) {
+    meshDataReceivedCallback = callback;
+}
+
+void RadioManager::onAnyFrameReceived(void (*callback)(uint8_t senderId)) {
+    anyFrameReceivedCallback = callback;
+}
+
+bool RadioManager::isMeshPayload(String &str) {
+    const char *data = str.c_str();
+    return str.length() >= 5 && data[0] == '<' && data[1] == 'M' && data[2] == 'S'
+           && data[3] == 'H' && data[4] == '>';
 }
 
 bool RadioManager::isOtaPayload(String &str) {

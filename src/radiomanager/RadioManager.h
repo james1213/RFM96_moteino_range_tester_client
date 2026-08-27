@@ -14,6 +14,10 @@
 
 #define LOG_ACTIVE false
 
+// Adres rozgloszeniowy: ramka do 255 jest przyjmowana przez KAZDY wezel (mesh
+// uzywa go do beaconow topologii). Broadcasty ida bez ACK - nie ma jednego adresata.
+#define RADIO_BROADCAST_ID 255
+
 // Moc nadawania RFM95/96: uzywamy wyjscia PA_BOOST, bo tylko ono jest podlaczone
 // do anteny w modulach HopeRF (wyjscie RFO zostaje niepodlaczone - dalo by ~zero mocy).
 // Powyzej 17 dBm uklad wchodzi w tryb wysokiej mocy (PA_DAC) i wymaga podniesienia
@@ -62,6 +66,8 @@ public:
     void (*ackReceivedCallback)();
     void (*dataReceivedCallback)(String &receivedText, uint8_t senderId);
     void (*otaDataReceivedCallback)(String &receivedText, uint8_t senderId);
+    void (*meshDataReceivedCallback)(String &receivedText, uint8_t senderId) = nullptr;
+    void (*anyFrameReceivedCallback)(uint8_t senderId) = nullptr; // kazda poprawna ramka (mesh: dowod zycia sasiada)
     void (*dataSentCallback)();
 
     String sendBuffer = "";
@@ -71,6 +77,8 @@ public:
     uint8_t sendBufferDest = 0;      // adresat i flaga ACK zwiazane z konkretnym buforem,
     uint8_t ackSendBufferDest = 0;   // zeby zakolejkowanie ACK nie nadpisalo metadanych
     bool sendBufferAckReq = false;   // czekajacej wiadomosci DAT (i odwrotnie)
+    int8_t sendBufferTxPwrOverride = -1; // wymuszona moc dla ramki w sendBuffer (-1 = regulowana)
+    int8_t frameTxPwrOverride = -1;      // j.w., przekazywana do startSending przez sendLoop
     uint8_t destinationIdOfLastMessage = 0;
     uint8_t senderIdOfLastMessage = 0;
     uint8_t receivedMessageIdOfLastMessage = 0;
@@ -116,6 +124,7 @@ public:
     bool buildTaggedPayload(String &out, const char *tag, const String &body);
     bool sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     bool sendTagged(String &taggedPayload, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
+    bool sendTaggedAtPower(String &taggedPayload, uint8_t address, int8_t txPowerDbmOverride); // bez ACK, wymuszona moc (beacony mesh)
     bool send(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     bool startSending(String &str, uint8_t address, bool ackRequested);
     unsigned long lastRamErrorMillis = 0;
@@ -140,7 +149,10 @@ public:
     void printTxPower();
     void dumpRegisters();
     void onOtaDataReceived(void (*callback)(String &, uint8_t));
+    void onMeshDataReceived(void (*callback)(String &, uint8_t));
+    void onAnyFrameReceived(void (*callback)(uint8_t senderId));
     bool isOtaPayload(String &str);
+    bool isMeshPayload(String &str);
     bool isDataPayload(String &str);
     int getReceivedPacketSize();
     bool isNeedToSendAckToSender();

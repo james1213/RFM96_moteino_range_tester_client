@@ -11,6 +11,8 @@
 // calego RAM), pisze znaki wprost do pamieci wyswietlacza.
 #include <SSD1306AsciiAvrI2c.h>
 
+#include <mesh/MeshRouter.h>
+
 #define NODE_ID 0x01
 
 // ==================== MOC NADAJNIKA ====================
@@ -67,6 +69,7 @@ SPIFlash flash(SS_FLASHMEM, 0xEF30); //EF30 for 4mbit  Windbond chip (W25X40CL)
 
 RadioManager *manager = new RadioManager();
 RadioOta *radioOta = new RadioOta(manager);
+MeshRouter *mesh = new MeshRouter(manager);
 
 #define OLED_I2C_ADDRESS 0x3C
 SSD1306AsciiAvrI2c oled;
@@ -98,11 +101,20 @@ void setup() {
 }
 
 void setupRadio() {
-    manager->onDataReceived(dataReceived);
+    manager->onDataReceived(dataReceived); // stare <DAT> wprost - zgodnosc wstecz
 //    manager->onOtaDataReceived(radioOtaDataReceived);
     manager->onOtaDataReceived([](String &str, uint8_t senderId){
         radioOta->radioOtaDataReceived(str, senderId);
     });
+    manager->onMeshDataReceived([](String &str, uint8_t senderId){
+        mesh->radioMeshDataReceived(str, senderId);
+    });
+    manager->onAnyFrameReceived([](uint8_t senderId){
+        mesh->noteFrameFrom(senderId); // kazda ramka = dowod zycia sasiada
+    });
+    // Dane dostarczone przez mesh laduja w tym samym handlerze co bezposrednie -
+    // drugi parametr to wtedy WEZEL ZRODLOWY, nie nadawca ostatniego skoku.
+    mesh->onDataReceived(dataReceived);
 
     manager->onDataSent([]() {
 //        Serial.println(F("MAIN | data sent"));
@@ -252,6 +264,9 @@ void loop() {
     // APC: na czas transferu OTA moc przypieta do sufitu, regulator zamrozony
     // (wykrywanie zbocza w srodku - wolanie co obieg jest tanie).
     manager->setApcFrozen(radioOta->isOtaInProgress());
+    // Mesh: na czas OTA bez beaconow i forwardingu (RAM i airtime dla transferu).
+    mesh->setFrozen(radioOta->isOtaInProgress());
+    mesh->loop();
 
     // Ruch testowy: wstrzymany, gdy trwa transfer OTA (isOtaInProgress), a gdy radio
     // jest chwilowo zajete (send() zwraca false), wiadomosc jest po prostu pomijana -
@@ -276,7 +291,9 @@ void loop() {
         Serial.print(F("Sending payload: \""));
         Serial.print(str);
         Serial.println(F("\""));
-        bool queued = manager->send(str, 2,
+        // Ruch testowy idzie przez mesh: trasa (takze wieloskokowa) wybierana
+        // automatycznie z tablicy tras budowanej z beaconow.
+        bool queued = mesh->send(2, str,
                       []() {
                           Serial.println(F("MAIN | OK"));
                       },
@@ -284,7 +301,7 @@ void loop() {
                           Serial.print(F("MAIN | NOT OK, payload = "));
                           Serial.println(payload);
                       });
-        if (!queued) Serial.println(F("MAIN | radio busy, skipped"));
+        if (!queued) Serial.println(F("MAIN | send pominiety (brak trasy albo radio zajete)"));
     }
 
     radioOta->loop();
