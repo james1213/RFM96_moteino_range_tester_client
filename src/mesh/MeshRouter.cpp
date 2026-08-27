@@ -225,11 +225,15 @@ bool MeshRouter::sendBeacon() {
 }
 
 // body wskazuje za "B?": "<mocTx>?<seq>?<cel>:<koszt>:<seq>,..."
+// Parsowanie strtoul-em, nie strtol-em: pola sa nieujemne, a strtoul i tak musi
+// byc zlinkowany (CRC32 w OTA przekracza zakres long) - dzieki temu generyczny
+// strtol (~560 B) w ogole nie trafia do binarki. Smieci ujemne/ogromne odrzuca
+// walidacja zakresow ponizej.
 void MeshRouter::handleBeacon(const char *body, uint8_t radioSender) {
     char *cursor;
-    long beaconTxPower = strtol(body, &cursor, 10);
+    long beaconTxPower = (long) strtoul(body, &cursor, 10);
     if (*cursor != '?') return;
-    long senderSeq = strtol(cursor + 1, &cursor, 10);
+    long senderSeq = (long) strtoul(cursor + 1, &cursor, 10);
     if (*cursor != '?') return;
     cursor++;
 
@@ -268,11 +272,11 @@ void MeshRouter::handleBeacon(const char *body, uint8_t radioSender) {
     // Trasy ogloszone przez nadawce: DSDV - nowszy seq wygrywa zawsze, w ramach
     // tego samego seq obowiazuje histereza (ruch = wahania RSSI = ryzyko trzepotania).
     while (*cursor != '\0') {
-        long dest = strtol(cursor, &cursor, 10);
+        long dest = (long) strtoul(cursor, &cursor, 10);
         if (*cursor != ':') break;
-        long metric = strtol(cursor + 1, &cursor, 10);
+        long metric = (long) strtoul(cursor + 1, &cursor, 10);
         if (*cursor != ':') break;
-        long seq = strtol(cursor + 1, &cursor, 10);
+        long seq = (long) strtoul(cursor + 1, &cursor, 10);
         if (*cursor == ',') cursor++;
 
         if (dest == manager->nodeId) {
@@ -417,13 +421,13 @@ void MeshRouter::radioMeshDataReceived(String &str, uint8_t radioSender) {
 void MeshRouter::handleData(String &str, const char *body, uint8_t radioSender) {
     (void) radioSender;
     char *cursor;
-    long origin = strtol(body, &cursor, 10);
+    long origin = (long) strtoul(body, &cursor, 10);
     if (*cursor != '?') return;
-    long finalDest = strtol(cursor + 1, &cursor, 10);
+    long finalDest = (long) strtoul(cursor + 1, &cursor, 10);
     if (*cursor != '?') return;
-    long ttl = strtol(cursor + 1, &cursor, 10);
+    long ttl = (long) strtoul(cursor + 1, &cursor, 10);
     if (*cursor != '?') return;
-    long flowId = strtol(cursor + 1, &cursor, 10);
+    long flowId = (long) strtoul(cursor + 1, &cursor, 10);
     if (*cursor != '?') return;
     const char *payload = cursor + 1;
 

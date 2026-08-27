@@ -32,12 +32,17 @@
 //
 // Przy wlaczonym APC (RadioManager.h) to tylko moc STARTOWA - dalej moc reguluje
 // sie sama wedlug RSSI raportowanego w ACK-ach przez druga strone.
-#define TX_POWER_DBM 20
+// Konfiguracja LAWKOWA (plytki blisko siebie, zasilanie z USB/FTDI). Przy 20 dBm
+// z odleglosci kilkudziesieciu cm odbiornik ulega saturacji: ramki gina wlasnie
+// dlatego, ze sygnal jest ZA MOCNY, a eskalacja APC "brak ACK -> pelna moc"
+// pogarsza sprawe (widziane na sprzecie jako spirala strat przy [P18-P20]).
+// W terenie: TX_POWER_DBM 20 i APC_CEILING_DBM 20.
+#define TX_POWER_DBM 2
 
 // Sufit automatycznej eskalacji APC (skok przy stratach ACK i na czas transferu OTA).
 // UWAGA: przy zasilaniu z pinu 3V3 FTDI ustaw najwyzej TX_POWER_FTDI_SAFE_DBM (10) -
 // inaczej automat sam, bez udzialu TX_POWER_DBM, wpedzi plytke w petle brown-outow.
-#define APC_CEILING_DBM 20
+#define APC_CEILING_DBM 10
 
 #if TX_POWER_DBM < TX_POWER_MIN_DBM || TX_POWER_DBM > TX_POWER_MAX_DBM
 #error "TX_POWER_DBM poza zakresem - dozwolone 2..20 dBm (PA_BOOST)"
@@ -148,9 +153,9 @@ void setupFlash() {
         }
         Serial.println();
 
-        char flashBuff[50];
-        sprintf(flashBuff, "[FLASH] DeviceID: 0x%X", flash.readDeviceId());
-        Serial.println(flashBuff);
+        // Bez sprintf: rodzina printf (vfprintf + pomocnicy) kosztowala ~1,1 KB flasha.
+        Serial.print(F("[FLASH] DeviceID: 0x"));
+        Serial.println(flash.readDeviceId(), HEX);
         Serial.println(F("[FLASH] Setup finished"));
     } else {
         Serial.println(F("[FLASH] SPI Flash MEM not found (is chip soldered?)..."));
@@ -212,8 +217,17 @@ void displayCountAndRssi(const String &str) {
 
     // Gorna linia (2X): "#<licznik> <rssi>". Komorki za koncem tekstu dopelniamy
     // spacjami - to zastepuje clearToEOL i przy okazji przykrywa napis startowy.
+    // Skladanie reczne zamiast snprintf: rodzina printf to ~1,1 KB flasha.
     char topLine[11];
-    snprintf(topLine, sizeof(topLine), "#%ld %d", atol(counter + 2), manager->getLastRssi());
+    char num[12];
+    uint8_t pos = 0;
+    topLine[pos++] = '#';
+    ltoa(atol(counter + 2), num, 10);
+    for (char *c = num; *c != '\0' && pos < 10; c++) topLine[pos++] = *c;
+    if (pos < 10) topLine[pos++] = ' ';
+    itoa(manager->getLastRssi(), num, 10);
+    for (char *c = num; *c != '\0' && pos < 10; c++) topLine[pos++] = *c;
+    topLine[pos] = '\0';
     oled.set2X();
     bool textEnded = false;
     for (uint8_t i = 0; i < 10; i++) {
