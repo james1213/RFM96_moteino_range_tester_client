@@ -20,11 +20,13 @@
 //   dobija reszte.
 //
 // BEACONY A MOC NADAWANIA
-//   Beacony ida ZAWSZE na suficie mocy (apcMaxDbm), niezaleznie od biezacej
-//   regulacji: APC potrafi zejsc do 2 dBm dla bliskiego sasiada i odlegle wezly
-//   przestalyby nas slyszec - topologia zwinelaby sie do jednego lacza. Krotki
-//   beacon co kilka sekund na pelnej mocy to pomijalny koszt energii, a moc
-//   wpisana w beacon i tak czyni pomiar tlumienia poprawnym przy KAZDEJ mocy.
+//   Beacony ida PRZEMIENNIE: co drugi na suficie mocy (odkrywanie odleglych
+//   wezlow - APC potrafi zejsc do 2 dBm i sam regulowany beacon zwinalby
+//   topologie do jednego lacza), a co drugi na biezacej mocy regulowanej
+//   (utrzymanie topologii z BLISKA - na suficie z malej odleglosci odbiornik
+//   ulega saturacji i beacony gina pierwsze, zabierajac cale trasy; widziane
+//   na sprzecie jako wielominutowy zastoj calego mesh). Moc wpisana w beacon
+//   czyni pomiar tlumienia poprawnym przy KAZDEJ mocy.
 //
 // CZEGO TA WERSJA NIE ROBI (swiadomie):
 //   - ACK tylko skok po skoku; potwierdzenie "OK" u nadawcy oznacza dotarcie do

@@ -197,13 +197,21 @@ bool MeshRouter::isDuplicate(uint8_t origin, uint8_t flowId) {
 bool MeshRouter::sendBeacon() {
     uint8_t seqToSend = ownSeq + 1;
     if (seqToSend == 0) seqToSend = 1;
+    // Beacony PRZEMIENNE: co drugi na suficie (odkrywanie odleglych wezlow), co
+    // drugi na biezacej mocy regulowanej. Sam sufit okazal sie pulapka: z malej
+    // odleglosci odbiornik ulega saturacji i to wlasnie beacony gina pierwsze,
+    // zabierajac cale trasy - dane na niskiej mocy przeszlyby bez problemu, ale
+    // bez tras nikt ich nie wysyla i mesh staje na dobre (widziane na sprzecie).
+    // Moc wpisana ponizej w tresc czyni pomiar tlumienia poprawnym przy kazdej mocy.
+    int8_t beaconPower = (seqToSend & 1) ? manager->getEffectiveTxPower()
+                                         : manager->apcMaxDbm;
     String beacon;
     if (!beacon.reserve(24 + MESH_MAX_ROUTES * 12)) {
         Serial.println(F("MESH | brak RAM na beacon - pomijam"));
         return false;
     }
     beacon = F("<MSH>B?");
-    beacon += (int) manager->apcMaxDbm; // moc, z jaka beacon FAKTYCZNIE poleci (sufit)
+    beacon += (int) beaconPower; // moc, z jaka beacon FAKTYCZNIE poleci
     beacon += '?';
     beacon += seqToSend;
     beacon += '?';
@@ -218,8 +226,8 @@ bool MeshRouter::sendBeacon() {
         beacon += ':';
         beacon += r.seq;
     }
-    // Broadcast bez ACK, zawsze na suficie mocy - patrz naglowek pliku.
-    bool queued = manager->sendTaggedAtPower(beacon, RADIO_BROADCAST_ID, manager->apcMaxDbm);
+    // Broadcast bez ACK, moc przemienna - patrz komentarz wyzej.
+    bool queued = manager->sendTaggedAtPower(beacon, RADIO_BROADCAST_ID, beaconPower);
     if (queued) ownSeq = seqToSend; // seq rosnie tylko dla beaconow, ktore poszly
     return queued;
 }

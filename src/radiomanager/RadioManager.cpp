@@ -9,9 +9,12 @@ void RadioManager::setupRadio(long frequency, int ss, int reset, int dio0, uint8
     nodeId = _nodeId;
 //    LoRa.setPins(10, 7, 2);
     LoRa.setPins(ss, reset, dio0);
-    if (!LoRa.begin(frequency)) {
-        DEBUGlogln(F("LoRa init failed. Check your connections."));
-        while (true);                       // if failed, do nothing
+    // Po samoczynnym reboocie (brown-out w trakcie nadawania) modul potrafi nie
+    // odpowiedziec przy pierwszym podejsciu. Ciche while(true) zamienialo to w
+    // wieczna cegle - teraz probujemy do skutku i mowimy o tym glosno.
+    while (!LoRa.begin(frequency)) {
+        Serial.println(F("[RADIO] LoRa.begin nie odpowiada - ponawiam za 500 ms"));
+        delay(500);
     }
     // enableCrc() musi byc PO begin() - begin() resetuje modul i czysci ten bit
     LoRa.enableCrc();
@@ -434,11 +437,26 @@ void RadioManager::apcOnAckPayload(const String &ackPayload) {
 void RadioManager::apcOnAckTimeout() {
     if (!APC_ENABLED || apcFrozen) return;
     if (ackMissStreak < 255) ackMissStreak++;
-    // Gdy nie jestesmy slyszani, nie ma kanalu zwrotnego - odzysk musi byc skokiem
-    // na sufit, nie krokami. Warunek == zamiast >= : komunikat i zadanie raz na serie.
-    if (ackMissStreak == APC_ACK_MISS_LIMIT) {
-        Serial.println(F("RadioManager | APC: brak ACK - skok na pelna moc"));
-        apcRequestPower(apcMaxDbm);
+    // Seria strat = sonda mocy: kroki W GORE od mocy biezacej, po przekroczeniu
+    // sufitu zawiniecie do minimum. Poprzednia polityka (skok od razu na sufit)
+    // byla pulapka: z bliska sufit saturuje odbiornik, a nocny zapis pokazal 545
+    // takich epizodow, kazdy konczony dopiero powolnym zejsciem sondy w dol
+    // (rozklad markerow [P10]/[P8]/[P6]/[P4] po ~5 tys. ramek). Krok w gore
+    // z bliska nie opuszcza strefy dzialajacych mocy (epizod konczy sie po
+    // jednej serii), a w terenie dociera do sufitu w 2-4 serie - regulacja ze
+    // zwrotek i tak obsluguje stopniowe slabniecie lacza, sonda jest od strat
+    // calkowitych.
+    if (ackMissStreak >= APC_ACK_MISS_LIMIT
+        && ackMissStreak % APC_ACK_MISS_LIMIT == 0) {
+        int8_t current = getEffectiveTxPower();
+        int8_t next = current + 2 * APC_STEP_DB;
+        if (next > apcMaxDbm) {
+            next = (current >= apcMaxDbm) ? TX_POWER_MIN_DBM : apcMaxDbm;
+        }
+        Serial.print(F("RadioManager | APC: brak ACK - sonduje moc "));
+        Serial.print(next);
+        Serial.println(F(" dBm"));
+        apcRequestPower(next);
     }
 }
 
