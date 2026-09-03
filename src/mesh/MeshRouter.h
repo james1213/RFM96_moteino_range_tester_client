@@ -73,6 +73,7 @@ public:
     uint8_t getNextHop(uint8_t dest);              // 0 = brak trasy
     uint8_t getRouteMetric(uint8_t dest);          // MESH_METRIC_INFINITY = brak
     void printTopology();                          // zrzut sasiadow i tras na serial
+    void printState();                             // jedna linia: sasiedzi, trasy, flagi (czarna skrzynka)
 
 private:
     struct Neighbor {

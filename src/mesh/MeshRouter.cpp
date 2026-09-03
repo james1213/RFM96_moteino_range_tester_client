@@ -38,6 +38,7 @@ void MeshRouter::loop() {
         } else if (manager->sendTagged(manager->ackCallback_paylod, hopDest,
                                        sHopAckOk, sHopAckFail)) {
             hopRetryPending = false;
+            if (hopRetriesLeft > 0) hopRetriesLeft--; // proba zuzyta: poszla w eter
         } else {
             hopRetryAtMillis = millis() + 150 + (micros() & 0x7F);
         }
@@ -238,6 +239,7 @@ bool MeshRouter::sendBeacon() {
 // strtol (~560 B) w ogole nie trafia do binarki. Smieci ujemne/ogromne odrzuca
 // walidacja zakresow ponizej.
 void MeshRouter::handleBeacon(const char *body, uint8_t radioSender) {
+    if (radioSender == manager->nodeId || radioSender == 0) return; // nigdy sasiad z wlasnym id
     char *cursor;
     long beaconTxPower = (long) strtoul(body, &cursor, 10);
     if (*cursor != '?') return;
@@ -387,16 +389,17 @@ void MeshRouter::hopAckFail(String &taggedPayload) {
         return;
     }
     if (hopRetriesLeft > 0) {
-        Serial.println(F("MESH | skok bez ACK - ponawiam"));
-        if (manager->sendTagged(taggedPayload, hopDest, sHopAckOk, sHopAckFail)) {
-            hopRetriesLeft--; // proba zuzyta dopiero, gdy naprawde poszla w eter
-            return;
-        }
-        // Radio zajete w chwili timeoutu to NIE strata w eterze: nie zuzywaj proby
-        // i nie karz sasiada uniewaznieniem tras - odloz ponowienie (obsluga w loop()).
-        if (!hopRetryPending) hopRetryDeadlineMillis = millis() + 2000;
+        // NIGDY nie ponawiamy natychmiast. Timeout ACK jest deterministyczny (1 s od
+        // nadania), wiec dwa wezly, ktorych ramki raz sie zderzyly, ponawialy je w tej
+        // samej milisekundzie i zderzaly ponownie - az do wyczerpania prob, utraty tras
+        // i sondowania mocy (ktore kolizji nie leczy). Czarna skrzynka pokazala
+        // "nie potwierdza" na OBU wezlach w identycznych znacznikach czasu. Losowy
+        // odstep 100-611 ms (ALOHA) rozrywa te synchronizacje; proba jest zuzywana
+        // dopiero, gdy ponowienie naprawde pojdzie w eter (obsluga w loop()).
+        Serial.println(F("MESH | skok bez ACK - ponawiam po losowym odstepie"));
+        if (!hopRetryPending) hopRetryDeadlineMillis = millis() + 2500;
         hopRetryPending = true;
-        hopRetryAtMillis = millis() + 150 + (micros() & 0x7F);
+        hopRetryAtMillis = millis() + 100 + (micros() & 0x1FF);
         return;
     }
     giveUpHop();
@@ -510,6 +513,26 @@ bool MeshRouter::forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl,
     }
     Serial.println(F("MESH | forward porzucony - gniazdo odlozen zajete"));
     return false;
+}
+
+// "DIAG mesh nb=<id>/<tlumienie>/<wiek s> ... rt=<cel>>via<skok>:<koszt>:<seq> ... flagi"
+void MeshRouter::printState() {
+    Serial.print(F("DIAG mesh nb="));
+    for (auto &n : neighbors) {
+        if (n.id == 0) continue;
+        Serial.print(n.id); Serial.print('/'); Serial.print(n.pathLossDb); Serial.print('/');
+        Serial.print((millis() - n.lastHeardMillis) / 1000); Serial.print(' ');
+    }
+    Serial.print(F("rt="));
+    for (auto &r : routes) {
+        if (r.dest == 0) continue;
+        Serial.print(r.dest); Serial.print('>'); Serial.print(r.nextHop); Serial.print(':');
+        Serial.print(r.metric); Serial.print(':'); Serial.print(r.seq); Serial.print(' ');
+    }
+    Serial.print(F("seq=")); Serial.print(ownSeq);
+    Serial.print(F(" retry=")); Serial.print(hopRetryPending);
+    Serial.print(F(" fwd=")); Serial.print(pendingForwardFrame.length());
+    Serial.print(F(" frozen=")); Serial.println(frozen);
 }
 
 void MeshRouter::printTopology() {

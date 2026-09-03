@@ -49,7 +49,7 @@
 #endif
 
 
-int count = 0;
+static uint16_t count = 0;
 
 // Optiboot przed skokiem do aplikacji zeruje MCUSR, ale oryginal zostawia w r2.
 uint8_t resetFlags __attribute__((section(".noinit")));
@@ -281,6 +281,14 @@ void loop() {
     // Mesh: na czas OTA bez beaconow i forwardingu (RAM i airtime dla transferu).
     mesh->setFrozen(radioOta->isOtaInProgress());
     mesh->loop();
+
+    // Czarna skrzynka: stan radia i mesh co 10 s - do diagnozy epizodow gluchoty.
+    static unsigned long lastDiagMillis = 0;
+    if (millis() - lastDiagMillis >= 10000) {
+        lastDiagMillis = millis();
+        manager->printRadioDiag();
+        mesh->printState();
+    }
 
     // Ruch testowy: wstrzymany, gdy trwa transfer OTA (isOtaInProgress), a gdy radio
     // jest chwilowo zajete (send() zwraca false), wiadomosc jest po prostu pomijana -

@@ -55,8 +55,12 @@ bool RadioManager::isNeedToSendAckToSender(){
 }
 
 void RadioManager::loop() {
-    sendLoop();
+    // receiveLoop PRZED sendLoop: odebrana, jeszcze nieodczytana ramka lezy w FIFO
+    // radia, a beginPacket() przy nadawaniu zeruje wskaznik FIFO i nadpisuje ja
+    // wlasnym payloadem. Wezel czytal wtedy WLASNA ramke jako odebrana (czarna
+    // skrzynka: klient z sasiadem o wlasnym id), a prawdziwa ramka przepadala.
     receiveLoop();
+    sendLoop();
     waitForAckTimeoutLoop();
     txStuckWatchdogLoop();
 }
@@ -139,6 +143,12 @@ void RadioManager::receiveLoop() {
             DEBUGlogln(F("This is a destination address"));
         } else {
             DEBUGlogln(F("This is not a destination address, ignoring message"));
+            return;
+        }
+        // Ramka "od nas samych" nie ma prawa istniec: to echo wlasnego payloadu
+        // odczytane z FIFO po wyscigu z nadawaniem albo przeklamany naglowek.
+        if (senderIdOfLastMessage == nodeId) {
+            Serial.println(F("RadioManager | ramka z wlasnym id nadawcy - odrzucam"));
             return;
         }
 
@@ -593,11 +603,28 @@ bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
         ackFramePendingTx = true;
     }
     if (messageId == 0) messageId = 1;
-    sendLoop();
+    // Nadanie CELOWO odlozone do nastepnego obiegu petli (manager->loop() i tak
+    // wola sendLoop co obieg). Natychmiastowe sendLoop() tutaj oznaczalo, ze
+    // startSending rezerwowal ramke wyjsciowa, gdy na stercie zyly jeszcze kopie
+    // chwilowe wolajacego (tresc aplikacji + ramka mesh, ~217 B) - na kliencie
+    // dawalo to stala sciane "wolne 241 B" przy kazdej wysylce.
     return true;
 }
 
 bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested) {
+    // Najpierw warunki odroczenia BEZ zadnych efektow ubocznych - wczesniej odroczony
+    // beacon aplikowal i cofal moc w kazdym obiegu petli (70 zapisow SPI i 70 linii
+    // "APC: moc" na jeden 400-ms nasluch kanalu).
+    // (a) Nieodczytana ramka w FIFO: beginPacket() by ja zniszczyl - czekamy obieg.
+    if (receivedFlag) return false;
+    // (b) Nasluch przed nadaniem (CSMA): przy kadencji 1 s i ramkach 150-200 ms dwa
+    // wezly zderzaly sie co kilka sekund. Zajety kanal = odkladamy ramke (bufor
+    // zostaje), ale nie dluzej niz CS_MAX_WAIT_MS, zeby halas nie zaglodzil nadajnika.
+    if (LoRa.rssi() > CS_BUSY_RSSI_DBM) {
+        if (csBusySinceMillis == 0) csBusySinceMillis = millis();
+        if (millis() - csBusySinceMillis < CS_MAX_WAIT_MS) return false;
+    }
+    csBusySinceMillis = 0;
     // Odlozona zmiana mocy APC - tu transmissionFinished jest na pewno true
     // (gwarantuje to sendLoop), wiec zapis rejestrow PA nie trafi w trwajaca ramke.
     if (apcPendingDbm >= 0) {
@@ -676,9 +703,50 @@ bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
 
 void RadioManager::LoRa_sendMessage(const String &message) {
     LoRa_txMode();                        // set tx mode
-    LoRa.beginPacket();                   // start packet
+    // beginPacket zwraca 0, gdy radio "wciaz nadaje" (tryb TX/CAD) - wtedy nie
+    // resetuje FIFO ani dlugosci payloadu, a my nadalibysmy smieci. Zamiast tego
+    // wymuszamy standby i probujemy raz jeszcze; po drugiej odmowie ramka przepada,
+    // ale radio wraca do nasluchu, zamiast czekac 2 s na watchdog TX.
+    if (!LoRa.beginPacket()) {
+        Serial.println(F("RadioManager | beginPacket odrzucony - wymuszam standby"));
+        LoRa.idle();
+        if (!LoRa.beginPacket()) {
+            transmissionFinished = true;
+            LoRa_rxMode();
+            return;
+        }
+    }
     LoRa.print(message);                  // add payload
     LoRa.endPacket(true);                 // finish packet and startSending it
+}
+
+// Jedna linia stanu radia i warstwy ACK - do czarnej skrzynki (co ~10 s z main.cpp).
+// Rejestry SX1276: 0x01 OP_MODE (RX_CONT=0x85, STDBY=0x81, TX=0x83), 0x40 DIO_MAPPING_1
+// (0x00 = RxDone na DIO0, 0x40 = TxDone), 0x12 IRQ_FLAGS (0x40 RxDone, 0x08 TxDone,
+// 0x20 CRC err). EIMSK bit0 = przerwanie INT0 (DIO0) odmaskowane.
+void RadioManager::printRadioDiag() {
+    Serial.print(F("DIAG rf mode=0x"));
+    Serial.print(LoRa.peekRegister(0x01), HEX);
+    Serial.print(F(" dio=0x"));
+    Serial.print(LoRa.peekRegister(0x40), HEX);
+    Serial.print(F(" irq=0x"));
+    Serial.print(LoRa.peekRegister(0x12), HEX);
+    Serial.print(F(" eimsk=0x"));
+    Serial.print(EIMSK, HEX);
+    Serial.print(F(" txFin="));
+    Serial.print(transmissionFinished);
+    Serial.print(F(" rxFlag="));
+    Serial.print(receivedFlag);
+    Serial.print(F(" wait="));
+    Serial.print(waitingForAck);
+    Serial.print(F(" pendTx="));
+    Serial.print(ackFramePendingTx);
+    Serial.print(F(" buf="));
+    Serial.print(sendBuffer.length());
+    Serial.print(F(" pwr="));
+    Serial.print(txPowerDbm);
+    Serial.print(F(" ram="));
+    Serial.println(freeRam());
 }
 
 void RadioManager::LoRa_txMode() {

@@ -27,6 +27,11 @@
 #define TX_POWER_FTDI_SAFE_DBM  10  // powyzej tego zasilanie z pinu 3V3 FTDI nie wyrabia
 #define TX_OCP_HIGH_POWER_MA    150 // limit pradu PA dla trybu >17 dBm (Semtech 5.4.3)
 
+// Nasluch kanalu przed nadaniem (CSMA na RSSI chwilowym). Podloga szumu SX1276
+// przy SF7/125 kHz to ok. -110..-120 dBm; ramka sasiada z biurka to -20..-60 dBm.
+#define CS_BUSY_RSSI_DBM  (-85)
+#define CS_MAX_WAIT_MS    400
+
 // ==================== AUTOMATYCZNA REGULACJA MOCY (APC) ====================
 // Kazdy ACK niesie zwrotke "!<id>@<rssi>": RSSI, z jakim odbiorca uslyszal
 // kwitowana ramke. Nadawca reguluje SWOJA moc tak, by u odbiorcy trafic w okno
@@ -128,6 +133,9 @@ public:
     bool send(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     bool startSending(String &str, uint8_t address, bool ackRequested);
     unsigned long lastRamErrorMillis = 0;
+    // Nasluch kanalu przed nadaniem (CSMA): jesli RSSI chwilowe przekracza prog,
+    // ktos wlasnie nadaje - odkladamy ramke o obieg petli, najdluzej CS_MAX_WAIT_MS.
+    unsigned long csBusySinceMillis = 0;
     void LoRa_sendMessage(const String &message);
     void LoRa_txMode();
     void sendAck();
@@ -147,6 +155,7 @@ public:
     int8_t getEffectiveTxPower();                   // moc, z jaka wyjdzie NASTEPNA ramka
     uint16_t getTxCurrentEstimate_mA();  // szacunkowy pobor pradu radia w czasie nadawania
     void printTxPower();
+    void printRadioDiag(); // jedna linia: tryb radia, DIO0, IRQ, EIMSK, flagi, RAM
     void dumpRegisters();
     void onOtaDataReceived(void (*callback)(String &, uint8_t));
     void onMeshDataReceived(void (*callback)(String &, uint8_t));

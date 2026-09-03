@@ -93,6 +93,7 @@ public:
   void setSPIFrequency(uint32_t frequency);
 
   void dumpRegisters(Stream& out);
+  uint8_t peekRegister(uint8_t address) { return readRegister(address); } // diagnostyka stanu radia
 
 private:
   void explicitHeaderMode();
