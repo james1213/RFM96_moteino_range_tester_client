@@ -50,6 +50,8 @@
 
 
 static uint16_t count = 0;
+static uint8_t actualDest = 2;
+static uint8_t maxNodes = 3;
 
 // Optiboot przed skokiem do aplikacji zeruje MCUSR, ale oryginal zostawia w r2.
 uint8_t resetFlags __attribute__((section(".noinit")));
@@ -315,7 +317,7 @@ void loop() {
         Serial.println(F("\""));
         // Ruch testowy idzie przez mesh: trasa (takze wieloskokowa) wybierana
         // automatycznie z tablicy tras budowanej z beaconow.
-        bool queued = mesh->send(2, str,
+        bool queued = mesh->send(actualDest, str,
                       []() {
                           Serial.println(F("MAIN | OK"));
                       },
@@ -324,6 +326,14 @@ void loop() {
                           Serial.println(payload);
                       });
         if (!queued) Serial.println(F("MAIN | send pominiety (brak trasy albo radio zajete)"));
+
+        actualDest++;
+        if (actualDest == NODE_ID) actualDest++;
+        if (actualDest > maxNodes) {
+            actualDest = 1;
+            if (actualDest == NODE_ID) actualDest++;
+        }
+
     }
 
     radioOta->loop();
