@@ -303,11 +303,15 @@ void loop() {
         Serial.println();
 
         String str;
-        // 38 (prefiks) + do 6 cyfr licznika + "][P" + 2 cyfry mocy + 51 (sufiks)
-        // = do 100 znakow. Rezerwa musi pokrywac calosc, inaczej realokacja przy
-        // kazdej wiadomosci tylko podnosi szczyt zuzycia sterty.
-        str.reserve(100);
-        str += F("Hello World from sender to receiver [#");
+        // "Hello World from N to M [#" (do 30 znakow przy 3-cyfrowych id) + do 6 cyfr
+        // licznika + "][P" + 2 cyfry mocy + 51 (sufiks) = do 92 znakow. Rezerwa musi
+        // pokrywac calosc, inaczej realokacja przy kazdej wiadomosci podnosi szczyt sterty.
+        str.reserve(92);
+        str += F("Hello World from ");
+        str += (int) NODE_ID;        // nadawca i adresat jako id wezlow, nie role -
+        str += F(" to ");            // przy cyklicznym actualDest tekst musi mowic prawde
+        str += (int) actualDest;
+        str += F(" [#");
         str += count++;
         str += F("][P"); // znacznik APC: moc, z jaka ta wiadomosc jest nadawana
         str += (int) manager->getEffectiveTxPower(); // moc FAKTYCZNEGO nadania; int8_t bez rzutu trafilby w concat(char)
