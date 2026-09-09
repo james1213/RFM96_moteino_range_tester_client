@@ -118,12 +118,13 @@ void RadioManager::sendLoop() {
     }
     // Potwierdzenia maja pierwszenstwo: druga strona odlicza swoj timeout ACK,
     // a nasza wlasna ramka moze poczekac jeden obieg petli.
-    if (ackPending) {
+    if (ackQueueCount > 0) {
         DEBUGlogln(F("[RFM96] Sending ACK packet ... "));
         frameTxPwrOverride = -1; // ACK-i zawsze moca regulowana
-        if (startSending(ackPayload, RADIO_ACK_PAYLOAD_SIZE, ackSendBufferDest,
-                         RADIO_TYPE_ACK, false)) {
-            ackPending = false;
+        if (startSending(ackQueue[ackQueueHead], RADIO_ACK_PAYLOAD_SIZE,
+                         ackQueueDest[ackQueueHead], RADIO_TYPE_ACK, false)) {
+            ackQueueHead = (uint8_t) ((ackQueueHead + 1) % RADIO_ACK_QUEUE_LEN);
+            ackQueueCount--;
         }
         return;
     }
@@ -170,26 +171,28 @@ bool RadioManager::readReceivedFrame() {
         DEBUGlogln(F("RadioManager | obcy format ramki - odrzucam"));
         return false;
     }
-    destinationIdOfLastMessage = header[0];
-    senderIdOfLastMessage = header[1];
-    receivedMessageIdOfLastMessage = header[2];
-    lastFrameType = header[3] & RADIO_TYPE_MASK;
-    rxLength = len;
-
-    if (destinationIdOfLastMessage != nodeId
-        && destinationIdOfLastMessage != RADIO_BROADCAST_ID) {
+    uint8_t frameDest = header[0];
+    uint8_t frameSender = header[1];
+    if (frameDest != nodeId && frameDest != RADIO_BROADCAST_ID) {
         DEBUGlogln(F("This is not a destination address, ignoring message"));
         return false;
     }
     // Ramka "od nas samych" nie ma prawa istniec: to echo wlasnego payloadu
     // odczytane z FIFO po wyscigu z nadawaniem albo przeklamany naglowek.
-    if (senderIdOfLastMessage == nodeId || senderIdOfLastMessage == 0) {
+    if (frameSender == nodeId || frameSender == 0) {
         Serial.println(F("RadioManager | ramka z wlasnym id nadawcy - odrzucam"));
         return false;
     }
+    // Pola naglowka publikujemy DOPIERO po przyjeciu ramki. Wczesniej cudza ramka
+    // (albo smiec) podmieniala nadawce widzianego przez warstwy wyzej, mimo ze
+    // sama byla odrzucana - a warstwa OTA odpowiada w kolejnym obiegu petli.
+    destinationIdOfLastMessage = frameDest;
+    senderIdOfLastMessage = frameSender;
+    receivedMessageIdOfLastMessage = header[2];
+    lastFrameType = header[3] & RADIO_TYPE_MASK;
+    rxLength = len;
     // Broadcast nikt nie kwituje - nie ma jednego adresata, ktory mialby to zrobic.
-    needToSendAckToSender = (header[3] & RADIO_FLAG_ACK_REQ) != 0
-                            && destinationIdOfLastMessage == nodeId;
+    needToSendAckToSender = (header[3] & RADIO_FLAG_ACK_REQ) != 0 && frameDest == nodeId;
     return true;
 }
 
@@ -221,6 +224,9 @@ void RadioManager::receiveLoop() {
             ackReceived = true;
             waitingForAck = false;
             pendingAckMessageId = 0;
+            // Transakcja zamknieta - ramka w buforze nie jest juz materialem na
+            // ponowienie. Bez tego hasRetainedFrame() twierdzilo, ze jest.
+            retainedFrameValid = false;
             apcOnAck((int8_t) rxPayload[1]); // zwrotka RSSI -> krok regulatora mocy
             if (ackReceivedCallback) {
                 ackReceivedCallback();
@@ -256,17 +262,24 @@ void RadioManager::receiveLoop() {
 void RadioManager::sendAck() {
     DEBUGlog(F("Sending ACK to address: "));
     DEBUGlogln(senderIdOfLastMessage);
-    // Dwa bajty w osobnym, malym buforze: id kwitowanej ramki i RSSI, z jakim ja
-    // uslyszelismy (zwrotka dla regulatora mocy drugiej strony). Osobny bufor,
-    // bo potwierdzenie musi moc wyjsc takze wtedy, gdy nasza wlasna ramka czeka
-    // w buforze nadawczym na swoje ACK.
-    ackPayload[0] = receivedMessageIdOfLastMessage;
+    // Dwa bajty: id kwitowanej ramki i RSSI, z jakim ja uslyszelismy (zwrotka dla
+    // regulatora mocy drugiej strony). Osobna, krotka kolejka - potwierdzenie musi
+    // moc wyjsc takze wtedy, gdy nasza wlasna ramka czeka w buforze na swoje ACK,
+    // a nadanie poprzedniego potwierdzenia jeszcze sie nie zaczelo.
+    if (ackQueueCount >= RADIO_ACK_QUEUE_LEN) {
+        // Kolejka pelna: gubimy NAJNOWSZE potwierdzenie, bo to najstarsze jest
+        // najblizej timeoutu u swojego nadawcy.
+        Serial.println(F("RadioManager | kolejka ACK pelna - gubie potwierdzenie"));
+        return;
+    }
+    uint8_t slot = (uint8_t) ((ackQueueHead + ackQueueCount) % RADIO_ACK_QUEUE_LEN);
+    ackQueue[slot][0] = receivedMessageIdOfLastMessage;
     int rssi = lastRssi;
     if (rssi < -128) rssi = -128;
     if (rssi > 127) rssi = 127;
-    ackPayload[1] = (uint8_t) (int8_t) rssi;
-    ackSendBufferDest = senderIdOfLastMessage;
-    ackPending = true;
+    ackQueue[slot][1] = (uint8_t) (int8_t) rssi;
+    ackQueueDest[slot] = senderIdOfLastMessage;
+    ackQueueCount++;
 }
 
 void RadioManager::waitForAckTimeoutLoop() {
@@ -513,6 +526,10 @@ bool RadioManager::sendText(const char *text, uint8_t address, uint8_t type,
     // Zero konczace NIE leci w eter - dlugosc niesie naglowek LoRa, a odbiorca
     // dopisuje zero sobie, w swoim buforze.
     size_t len = strlen(text);
+    if (len == 0 || len > RADIO_PAYLOAD_CAPACITY) {
+        Serial.println(F("RadioManager | ERROR: zla dlugosc tekstu - nie wyslano"));
+        return false;
+    }
     return sendBytes((const uint8_t *) text, (uint8_t) len, address, type,
                      _ackReceivedCallback != nullptr || _ackNotReceivedCallback != nullptr,
                      _ackReceivedCallback, _ackNotReceivedCallback);
@@ -526,6 +543,9 @@ bool RadioManager::sendOta(const char *text, uint8_t address,
 
 bool RadioManager::startSending(const uint8_t *payload, uint8_t len, uint8_t address,
                                 uint8_t type, bool ackRequested) {
+    // Ostatnia linia obrony: do FIFO nie ma prawa trafic ramka pusta ani dluzsza
+    // niz bufor. Wszystkie obecne sciezki sprawdzaja to wczesniej.
+    if (len == 0 || len > RADIO_PAYLOAD_CAPACITY) return false;
     // Najpierw warunki odroczenia BEZ zadnych efektow ubocznych - wczesniej odroczony
     // beacon aplikowal i cofal moc w kazdym obiegu petli (70 zapisow SPI i 70 linii
     // "APC: moc" na jeden 400-ms nasluch kanalu).

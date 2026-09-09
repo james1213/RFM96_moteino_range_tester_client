@@ -31,8 +31,11 @@ void MeshRouter::loop() {
     // Odlozone ponowienie skoku (timeout ACK trafil w zajete radio): ma
     // pierwszenstwo - trzyma slot transakcji, a payload wciaz lezy w buforze
     // nadawczym radia (resendRetained ponawia go bez zadnej kopii).
-    if (hopRetryPending && millis() >= hopRetryAtMillis && !manager->waitingForAck) {
-        if (millis() > hopRetryDeadlineMillis || !manager->hasRetainedFrame()) {
+    // Porownania przez ODEJMOWANIE - millis() przekreca sie co ~49 dni, a proste
+    // ">=" zostawiloby wtedy hopRetryPending na stale. To z kolei blokuje i wysylke,
+    // i beacony, czyli wezel milknie w sieci az do resetu.
+    if (hopRetryPending && (long) (millis() - hopRetryAtMillis) >= 0 && !manager->waitingForAck) {
+        if ((long) (millis() - hopRetryDeadlineMillis) > 0 || !manager->hasRetainedFrame()) {
             hopRetryPending = false;
             giveUpHop();
         } else if (manager->resendRetained(hopDest, sHopAckOk, sHopAckFail)) {
@@ -46,17 +49,17 @@ void MeshRouter::loop() {
     // Odlozony forward: poprzedni skok juz potwierdzil te ramke, wiec nikt jej
     // nie ponowi - odsylamy ja, gdy tylko slot transakcji sie zwolni.
     if (pendingForwardLen > 0 && !manager->waitingForAck && !hopRetryPending) {
-        if (millis() > pendingForwardDeadline) {
+        if ((long) (millis() - pendingForwardDeadline) > 0) {
             Serial.println(F("MESH | odlozony forward przeterminowany - porzucam"));
             pendingForwardLen = 0;
         } else {
-            hopRetriesLeft = MESH_HOP_RETRIES;
-            hopDest = pendingForwardHop;
-            appOkCallback = nullptr;
-            appFailCallback = nullptr;
             if (manager->sendBytes(pendingForward, pendingForwardLen, pendingForwardHop,
                                    RADIO_TYPE_MESH, true, sHopAckOk, sHopAckFail)) {
                 pendingForwardLen = 0;
+                hopRetriesLeft = MESH_HOP_RETRIES;
+                hopDest = pendingForwardHop;
+                appOkCallback = nullptr;   // forward nie jest nasza wysylka
+                appFailCallback = nullptr;
             }
         }
     }
@@ -242,7 +245,9 @@ void MeshRouter::handleBeacon(const uint8_t *body, uint8_t len, uint8_t radioSen
     // Tlumienie lacza do nadawcy: znamy moc nadania (z beaconu) i RSSI odbioru.
     // EMA 3/4 starej + 1/4 nowej probki - RSSI pojedynczej ramki skacze o kilka dB.
     int pathLoss = (int) beaconTxPower - manager->getLastRssi();
-    if (pathLoss < 0) pathLoss = 0;
+    // Minimum 1: zero znaczy "jeszcze nie mierzone" i przy dokladnie zerowym
+    // tlumieniu srednia kroczaca nigdy by nie wystartowala.
+    if (pathLoss < 1) pathLoss = 1;
     Neighbor *n = findNeighbor(radioSender, true);
     if (n == nullptr) return; // tablica pelna - sasiad poczeka na wolny slot
     if (n->pathLossDb == 0) n->pathLossDb = pathLoss;
@@ -351,15 +356,17 @@ bool MeshRouter::send(uint8_t finalDest, const uint8_t *payload, uint8_t len,
     if (frame == nullptr) return false;
     uint8_t total = composeDataFrame(frame, manager->nodeId, finalDest, MESH_MAX_TTL,
                                      nextFlowId, payload, len);
+    if (!manager->commitTxBuffer(total, nextHop, RADIO_TYPE_MESH, true,
+                                 sHopAckOk, sHopAckFail)) {
+        return false;
+    }
+    // Kontekst skoku dopiero po udanym zakolejkowaniu - inaczej nieudana proba
+    // zostawiala liczniki i callbacki poprzedniej transakcji nadpisane.
     hopRetriesLeft = MESH_HOP_RETRIES;
     hopDest = nextHop;
     // ACK skok po skoku: "OK" u aplikacji = dotarlo do PIERWSZEGO posrednika.
     appOkCallback = okCallback;
     appFailCallback = failCallback;
-    if (!manager->commitTxBuffer(total, nextHop, RADIO_TYPE_MESH, true,
-                                 sHopAckOk, sHopAckFail)) {
-        return false;
-    }
     // Dedup i zuzycie id dopiero po udanym zakolejkowaniu - nieudana proba nic
     // nie nadala, wiec to samo id moze legalnie sprobowac ponownie.
     isDuplicate(manager->nodeId, nextFlowId); // wlasna ramka do dedupu: echo ma zginac
@@ -408,7 +415,16 @@ void MeshRouter::giveUpHop() {
     Serial.println(F(" nie potwierdza - uniewazniam trasy przez niego"));
     invalidateRoutesVia(hopDest);
     if (appFailCallback) {
-        appFailCallback(manager->retainedFrame(), manager->retainedLength());
+        // Aplikacji oddajemy JEJ tresc, bez naglowka routingu - inaczej w logu
+        // ladowalo piec bajtow binarnych przed wiadomoscia. Gdy bufor zdazyl juz
+        // zostac zajety przez cos innego, nie ma czego pokazac.
+        uint8_t kept = manager->retainedLength();
+        if (kept >= MESH_DATA_HEADER) {
+            appFailCallback(manager->retainedFrame() + MESH_DATA_HEADER,
+                            (uint8_t) (kept - MESH_DATA_HEADER));
+        } else {
+            appFailCallback(nullptr, 0);
+        }
         appFailCallback = nullptr;
     }
     appOkCallback = nullptr;
@@ -471,12 +487,12 @@ bool MeshRouter::forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl,
         if (frame != nullptr) {
             uint8_t total = composeDataFrame(frame, origin, finalDest, ttl, flowId,
                                              payload, payloadLen);
-            hopRetriesLeft = MESH_HOP_RETRIES;
-            hopDest = nextHop;
-            appOkCallback = nullptr;   // forward nie jest nasza aplikacyjna wysylka
-            appFailCallback = nullptr;
             if (manager->commitTxBuffer(total, nextHop, RADIO_TYPE_MESH, true,
                                         sHopAckOk, sHopAckFail)) {
+                hopRetriesLeft = MESH_HOP_RETRIES;
+                hopDest = nextHop;
+                appOkCallback = nullptr;   // forward nie jest nasza aplikacyjna wysylka
+                appFailCallback = nullptr;
                 Serial.print(F("MESH | forward "));
                 Serial.print(origin);
                 Serial.print(F("->"));

@@ -75,6 +75,13 @@
 #if OTA_SERIAL_LINE_MAX > 255
 #error "OTA_SERIAL_LINE_MAX > 255 - readSerialLine przekazuje dlugosc jako uint8_t"
 #endif
+// Pakiet OTA musi sie zmiescic w ramce radiowej razem z prefiksem "FLX?DAT?".
+// Bez tej kontroli podniesienie OTA_PACKET_SIZE_BYTES wychodzi na jaw dopiero
+// na sprzecie, jako transfer, ktory nie rusza z miejsca.
+#if OTA_DAT_PREFIX_LEN + OTA_SERIAL_LINE_MAX - 8 > RADIO_PAYLOAD_CAPACITY
+#error "OTA_PACKET_SIZE_BYTES za duzy - linia HEX nie zmiesci sie w ramce radiowej"
+#endif
+
 #if OTA_SERIAL_LINE_MAX > SERIAL_RX_BUFFER_SIZE
 #warning "Linia OTA dluzsza niz bufor RX UART: dodaj build_flags = -DSERIAL_RX_BUFFER_SIZE=128 w platformio.ini"
 #endif
