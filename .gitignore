@@ -32,3 +32,6 @@
 *.exe
 *.out
 *.app
+
+# Konfiguracja IDE i cache SonarLinta - stan lokalny tej maszyny
+.idea/
