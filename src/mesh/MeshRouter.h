@@ -51,9 +51,26 @@
 // a odczyt to zwykle indeksowanie tablicy.
 #define MESH_MSG_BEACON       1
 #define MESH_MSG_DATA         2
+#define MESH_MSG_TOPO_REQ     3 // "przyslij liste swoich sasiadow"
+#define MESH_MSG_TOPO_RESP    4 // [liczba] potem 2 B na sasiada: [id][tlumienie dB]
 #define MESH_BEACON_HEADER    4
 #define MESH_BEACON_ROUTE_LEN 3
 #define MESH_DATA_HEADER      5
+#define MESH_NEIGHBOR_ENTRY   2
+
+// ==================== MAPA SIECI ====================
+// Beacon niesie teraz takze LISTE SASIADOW nadawcy (2 bajty na sasiada: id i
+// tlumienie sciezki). Kazdy wezel sklada z tego obraz sieci na DWA SKOKI: wlasnych
+// sasiadow zna z pomiaru, a ich sasiadow z ich beaconow. W tekstowym protokole
+// takie pole kosztowaloby ~8 znakow na sasiada i nie zmiescilo by sie rozsadnie
+// w ramce - binarny naglowek zrobil na nie miejsce.
+//
+// Dalsze wezly (3 skoki i wiecej) odpytuje sie jawnie: MESH_MSG_TOPO_REQ leci
+// trasa z tablicy routingu, a odpowiedz wraca ta sama droga i laduje w tablicy
+// krawedzi. Wezel przy PC jest wiec kolektorem: "MAP" zrzuca to, co wie, a
+// "MAP <id>" dopytuje wskazany wezel.
+#define MESH_MAX_EDGES        10
+#define MESH_EDGE_TIMEOUT_MS  60000 // krawedz nieodswiezona przez minute znika z mapy
 
 // Tresc dostarczona przez mesh: wskaznik w bufor odbiorczy radia (zakonczony
 // zerem, wiec nadaje sie wprost na C-string), dlugosc i WEZEL ZRODLOWY - nie
@@ -75,8 +92,9 @@ public:
     void setFrozen(bool frozen);                   // OTA: bez beaconow i forwardingu
     uint8_t getNextHop(uint8_t dest);              // 0 = brak trasy
     uint8_t getRouteMetric(uint8_t dest);          // MESH_METRIC_INFINITY = brak
-    void printTopology();                          // zrzut sasiadow i tras na serial
     void printState();                             // jedna linia: sasiedzi, trasy, flagi (czarna skrzynka)
+    bool requestTopology(uint8_t dest);            // zapytaj wezel o jego sasiadow
+    void printMap();                               // zrzut calej znanej mapy (format dla PC)
 
 private:
     struct Neighbor {
@@ -89,6 +107,15 @@ private:
         uint8_t nextHop = 0;
         uint8_t metric = MESH_METRIC_INFINITY;
         uint8_t seq = 0;                // numer sekwencyjny celu (DSDV)
+    };
+    // Krawedz grafu sieci, ktorej NIE jestesmy koncem - z listy sasiadow w cudzym
+    // beaconie albo z odpowiedzi na zapytanie o topologie. Wlasne lacza sa
+    // dokladniejsze i mieszkaja w tablicy sasiadow.
+    struct MapEdge {
+        uint8_t a = 0;                  // 0 = wolny wpis; zawsze a < b, zeby
+        uint8_t b = 0;                  // ta sama krawedz nie weszla dwa razy
+        uint8_t pathLossDb = 0;
+        unsigned long heardMillis = 0;
     };
 
     RadioManager *manager;
@@ -120,6 +147,10 @@ private:
     // Bufor jest staly: kopia i tak musi powstac (tresc lezy w buforze odbiorczym,
     // ktory nadpisze nastepna ramka), a staly bufor nie moze zawiesc ani
     // pofragmentowac sterty.
+    MapEdge edges[MESH_MAX_EDGES];
+    // Odpowiedz na zapytanie o topologie jest odkladana do petli glownej: przychodzi
+    // w srodku obslugi odbioru, gdy slot transakcji ACK bywa zajety.
+    uint8_t topoRespPendingTo = 0;
     uint8_t pendingForward[RADIO_PAYLOAD_CAPACITY];
     uint8_t pendingForwardLen = 0;
     uint8_t pendingForwardHop = 0;
@@ -132,12 +163,18 @@ private:
     void giveUpHop();
 
     bool sendBeacon();
-    static uint8_t composeDataFrame(uint8_t *out, uint8_t origin, uint8_t finalDest, uint8_t ttl,
-                                    uint8_t flowId, const uint8_t *payload, uint8_t payloadLen);
+    static uint8_t composeDataFrame(uint8_t *out, uint8_t msgType, uint8_t origin, uint8_t finalDest,
+                                    uint8_t ttl, uint8_t flowId, const uint8_t *payload,
+                                    uint8_t payloadLen);
+    bool sendTyped(uint8_t msgType, uint8_t finalDest, const uint8_t *payload, uint8_t len,
+                   void (*okCallback)(), RadioFailCallback failCallback);
     void handleBeacon(const uint8_t *body, uint8_t len, uint8_t radioSender);
-    void handleData(uint8_t *body, uint8_t len, uint8_t radioSender);
-    bool forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl, uint8_t flowId,
-                     const uint8_t *payload, uint8_t payloadLen);
+    void handleData(uint8_t msgType, uint8_t *body, uint8_t len, uint8_t radioSender);
+    bool forwardData(uint8_t msgType, uint8_t origin, uint8_t finalDest, uint8_t ttl,
+                     uint8_t flowId, const uint8_t *payload, uint8_t payloadLen);
+    uint8_t buildNeighborList(uint8_t *out); // [liczba][id][tlumienie]... - zwraca dlugosc
+    void addEdge(uint8_t a, uint8_t b, uint8_t pathLossDb);
+    void ageEdges();
     Neighbor *findNeighbor(uint8_t id, bool create);
     Route *findRoute(uint8_t dest, bool create);
     uint8_t linkCost(const Neighbor &n);

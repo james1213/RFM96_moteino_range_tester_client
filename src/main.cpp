@@ -147,6 +147,15 @@ void setupRadio() {
     // drugi parametr to wtedy WEZEL ZRODLOWY, nie nadawca ostatniego skoku.
     mesh->onDataReceived(dataReceived);
 
+    // Kolektor mapy: "MAP" zrzuca obraz sieci, "MAP <id>" dopytuje odlegly wezel.
+    radioOta->onMapCommand([](uint8_t queryId) {
+        if (queryId == 0) {
+            mesh->printMap();
+        } else if (!mesh->requestTopology(queryId)) {
+            Serial.println(F("MAP | zapytanie odrzucone - brak trasy albo radio zajete"));
+        }
+    });
+
     manager->onDataSent([]() {
 //        Serial.println(F("MAIN | data sent"));
     });

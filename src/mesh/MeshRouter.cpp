@@ -61,6 +61,17 @@ void MeshRouter::loop() {
         }
     }
 
+    // Odpowiedz na zapytanie o topologie - odlozona, bo powstaje w trakcie obslugi
+    // odbioru, kiedy slot transakcji ACK czesto jest jeszcze zajety.
+    if (topoRespPendingTo != 0 && !manager->waitingForAck && !hopRetryPending
+        && pendingForwardLen == 0) {
+        uint8_t body[1 + MESH_NEIGHBOR_ENTRY * MESH_MAX_NEIGHBORS];
+        uint8_t n = buildNeighborList(body);
+        if (sendTyped(MESH_MSG_TOPO_RESP, topoRespPendingTo, body, n, nullptr, nullptr)) {
+            topoRespPendingTo = 0;
+        }
+    }
+
     if (millis() - lastBeaconMillis >= beaconDueInMs) {
         lastBeaconMillis = millis();
         // Beacon nie nadaje, gdy nasluchujemy ACK skoku: radio jest poldupleksowe,
@@ -156,6 +167,7 @@ uint8_t MeshRouter::getRouteMetric(uint8_t dest) {
 // Wezly sa w ruchu: sasiad, ktory zamilkl, i trasy przez niego musza zniknac
 // szybko, a nie dopiero gdy inne wezly to ogłosza.
 void MeshRouter::ageTables() {
+    ageEdges();
     for (auto &n : neighbors) {
         if (n.id != 0 && millis() - n.lastHeardMillis > MESH_NEIGHBOR_TIMEOUT_MS) {
             Serial.print(F("MESH | sasiad "));
@@ -222,6 +234,9 @@ bool MeshRouter::sendBeacon() {
         count++;
     }
     beacon[countIndex] = count;
+    // Lista wlasnych sasiadow: to z niej sasiedzi skladaja obraz sieci na dwa skoki.
+    // 2 bajty na wpis, czyli caly beacon to najwyzej 4 + 18 + 1 + 8 = 31 bajtow.
+    n += buildNeighborList(beacon + n);
     // Broadcast bez ACK, moc przemienna - patrz komentarz wyzej.
     bool queued = manager->commitTxBuffer(n, RADIO_BROADCAST_ID, RADIO_TYPE_MESH, false,
                                           nullptr, nullptr, beaconPower);
@@ -312,25 +327,149 @@ void MeshRouter::handleBeacon(const uint8_t *body, uint8_t len, uint8_t radioSen
             route->seq = seq;
         }
     }
+
+    // Lista sasiadow nadawcy - z niej powstaje obraz sieci na dwa skoki. Starszy
+    // beacon bez tej sekcji po prostu jej nie ma i nic sie nie dzieje.
+    uint8_t used = (uint8_t) (3 + count * MESH_BEACON_ROUTE_LEN);
+    if (len <= used) return;
+    const uint8_t *nb = body + used;
+    uint8_t nbCount = nb[0];
+    if ((uint16_t) used + 1 + (uint16_t) nbCount * MESH_NEIGHBOR_ENTRY > len) return;
+    for (uint8_t i = 0; i < nbCount; i++) {
+        uint8_t id = nb[1 + i * MESH_NEIGHBOR_ENTRY];
+        uint8_t pl = nb[2 + i * MESH_NEIGHBOR_ENTRY];
+        // Krawedzi do nas samych nie zapisujemy: wlasne lacze znamy z pomiaru,
+        // a slotow na mape jest malo.
+        if (id == 0 || id == manager->nodeId) continue;
+        addEdge(radioSender, id, pl);
+    }
+}
+
+// ==================== MAPA SIECI ====================
+
+// "[liczba][id][tlumienie]..." - lista wlasnych sasiadow do beaconu i do odpowiedzi
+// na zapytanie o topologie. Tlumienie obcinane do bajta (200 dB to i tak fikcja).
+uint8_t MeshRouter::buildNeighborList(uint8_t *out) {
+    uint8_t n = 1;
+    uint8_t count = 0;
+    for (auto &x : neighbors) {
+        if (x.id == 0) continue;
+        out[n++] = x.id;
+        out[n++] = x.pathLossDb > 255 ? 255 : (uint8_t) x.pathLossDb;
+        count++;
+    }
+    out[0] = count;
+    return n;
+}
+
+// Krawedz zapisujemy w jednej, kanonicznej kolejnosci (a < b) - inaczej ta sama
+// krawedz weszlaby dwa razy, raz z beaconu kazdego z jej koncow.
+void MeshRouter::addEdge(uint8_t a, uint8_t b, uint8_t pathLossDb) {
+    if (a == 0 || b == 0 || a == b) return;
+    if (a > b) { uint8_t t = a; a = b; b = t; }
+    MapEdge *freeSlot = nullptr;
+    MapEdge *oldest = nullptr;
+    for (auto &e : edges) {
+        if (e.a == a && e.b == b) {
+            e.pathLossDb = pathLossDb;
+            e.heardMillis = millis();
+            return;
+        }
+        if (e.a == 0) {
+            if (freeSlot == nullptr) freeSlot = &e;
+        } else if (oldest == nullptr || (long) (e.heardMillis - oldest->heardMillis) < 0) {
+            oldest = &e;
+        }
+    }
+    // Tablica pelna: oddajemy najstarszy wpis. Mapa ma byc obrazem TERAZ, a wezly
+    // sa w ruchu - stara krawedz jest mniej warta od swiezej.
+    MapEdge *slot = (freeSlot != nullptr) ? freeSlot : oldest;
+    if (slot == nullptr) return;
+    slot->a = a;
+    slot->b = b;
+    slot->pathLossDb = pathLossDb;
+    slot->heardMillis = millis();
+}
+
+void MeshRouter::ageEdges() {
+    for (auto &e : edges) {
+        if (e.a != 0 && millis() - e.heardMillis > MESH_EDGE_TIMEOUT_MS) e.a = 0;
+    }
+}
+
+// Zapytanie o sasiadow wezla oddalonego o wiecej niz dwa skoki. Odpowiedz wraca
+// asynchronicznie i sama sie wypisze (oraz trafi do tablicy krawedzi).
+bool MeshRouter::requestTopology(uint8_t dest) {
+    if (dest == 0 || dest == manager->nodeId) return false;
+    return sendTyped(MESH_MSG_TOPO_REQ, dest, nullptr, 0, nullptr, nullptr);
+}
+
+// Zrzut mapy w formacie do sparsowania na PC (jedna krawedz w linii):
+//   MAP BEGIN <wezel> <czas pracy s>
+//   MAP N <sasiad> <tlumienie dB>            - lacze zmierzone przez nas
+//   MAP E <a> <b> <tlumienie dB> <wiek s>    - lacze uslyszane od kogos innego
+//   MAP R <cel> <przez> <koszt>              - z czego faktycznie korzysta routing
+//   MAP END
+void MeshRouter::printMap() {
+    ageEdges();
+    Serial.print(F("MAP BEGIN "));
+    Serial.print(manager->nodeId);
+    Serial.print(' ');
+    Serial.println(millis() / 1000);
+    for (auto &n : neighbors) {
+        if (n.id == 0) continue;
+        Serial.print(F("MAP N "));
+        Serial.print(n.id);
+        Serial.print(' ');
+        Serial.println(n.pathLossDb);
+    }
+    for (auto &e : edges) {
+        if (e.a == 0) continue;
+        Serial.print(F("MAP E "));
+        Serial.print(e.a);
+        Serial.print(' ');
+        Serial.print(e.b);
+        Serial.print(' ');
+        Serial.print(e.pathLossDb);
+        Serial.print(' ');
+        Serial.println((millis() - e.heardMillis) / 1000);
+    }
+    for (auto &r : routes) {
+        if (r.dest == 0) continue;
+        Serial.print(F("MAP R "));
+        Serial.print(r.dest);
+        Serial.print(' ');
+        Serial.print(r.nextHop);
+        Serial.print(' ');
+        Serial.println(r.metric);
+    }
+    Serial.println(F("MAP END"));
 }
 
 // ==================== DANE ====================
 
-// "[2][zrodlo][cel][TTL][id]" + tresc - wspolne dla wlasnych wysylek i forwardu.
+// "[rodzaj][zrodlo][cel][TTL][id]" + tresc - wspolne dla danych i dla wiadomosci
+// o topologii, bo wszystkie trzy jada tym samym mechanizmem routingu i ponowien.
 // Zwraca calkowita dlugosc zlozonej wiadomosci mesh.
-uint8_t MeshRouter::composeDataFrame(uint8_t *out, uint8_t origin, uint8_t finalDest, uint8_t ttl,
-                                     uint8_t flowId, const uint8_t *payload, uint8_t payloadLen) {
-    out[0] = MESH_MSG_DATA;
+uint8_t MeshRouter::composeDataFrame(uint8_t *out, uint8_t msgType, uint8_t origin,
+                                     uint8_t finalDest, uint8_t ttl, uint8_t flowId,
+                                     const uint8_t *payload, uint8_t payloadLen) {
+    out[0] = msgType;
     out[1] = origin;
     out[2] = finalDest;
     out[3] = ttl;
     out[4] = flowId;
-    memcpy(out + MESH_DATA_HEADER, payload, payloadLen);
+    if (payloadLen > 0) memcpy(out + MESH_DATA_HEADER, payload, payloadLen);
     return (uint8_t) (MESH_DATA_HEADER + payloadLen);
 }
 
 bool MeshRouter::send(uint8_t finalDest, const uint8_t *payload, uint8_t len,
                       void (*okCallback)(), RadioFailCallback failCallback) {
+    return sendTyped(MESH_MSG_DATA, finalDest, payload, len, okCallback, failCallback);
+}
+
+bool MeshRouter::sendTyped(uint8_t msgType, uint8_t finalDest, const uint8_t *payload, uint8_t len,
+                           void (*okCallback)(), RadioFailCallback failCallback) {
     // RadioManager ma JEDEN slot callbackow ACK - drugi skok z ACK w locie
     // nadpisalby callbacki (i kontekst ponowien) tego pierwszego. Odlozone
     // ponowienie tez trzyma slot.
@@ -349,7 +488,7 @@ bool MeshRouter::send(uint8_t finalDest, const uint8_t *payload, uint8_t len,
     // ponad te jedna, ktora i tak trzeba zrobic.
     uint8_t *frame = manager->acquireTxBuffer();
     if (frame == nullptr) return false;
-    uint8_t total = composeDataFrame(frame, manager->nodeId, finalDest, MESH_MAX_TTL,
+    uint8_t total = composeDataFrame(frame, msgType, manager->nodeId, finalDest, MESH_MAX_TTL,
                                      nextFlowId, payload, len);
     hopRetriesLeft = MESH_HOP_RETRIES;
     hopDest = nextHop;
@@ -419,13 +558,16 @@ void MeshRouter::radioMeshDataReceived(uint8_t *payload, uint8_t len, uint8_t ra
     if (len < 1) return;
     if (payload[0] == MESH_MSG_BEACON) {
         handleBeacon(payload + 1, (uint8_t) (len - 1), radioSender);
-    } else if (payload[0] == MESH_MSG_DATA) {
-        handleData(payload + 1, (uint8_t) (len - 1), radioSender);
+    } else if (payload[0] == MESH_MSG_DATA || payload[0] == MESH_MSG_TOPO_REQ
+               || payload[0] == MESH_MSG_TOPO_RESP) {
+        // Wszystkie trzy maja ten sam naglowek routingu, wiec i te sama obsluge
+        // dedupu, TTL i forwardowania - rozne sa dopiero w punkcie docelowym.
+        handleData(payload[0], payload + 1, (uint8_t) (len - 1), radioSender);
     }
 }
 
 // body wskazuje ZA bajt rodzaju: [zrodlo][cel koncowy][TTL][id strumienia] + tresc
-void MeshRouter::handleData(uint8_t *body, uint8_t len, uint8_t radioSender) {
+void MeshRouter::handleData(uint8_t msgType, uint8_t *body, uint8_t len, uint8_t radioSender) {
     (void) radioSender;
     if (len < MESH_DATA_HEADER - 1) return;
     uint8_t origin = body[0];
@@ -439,9 +581,36 @@ void MeshRouter::handleData(uint8_t *body, uint8_t len, uint8_t radioSender) {
     if (isDuplicate(origin, flowId)) return;
 
     if (finalDest == manager->nodeId) {
-        // Dostarczenie: tresc lezy w buforze odbiorczym radia, ktory jest zakonczony
-        // zerem - warstwa wyzej dostaje ja jako gotowy C-string, bez zadnej kopii.
-        if (dataReceivedCallback) dataReceivedCallback((const char *) payload, payloadLen, origin);
+        if (msgType == MESH_MSG_DATA) {
+            // Dostarczenie: tresc lezy w buforze odbiorczym radia, ktory jest zakonczony
+            // zerem - warstwa wyzej dostaje ja jako gotowy C-string, bez zadnej kopii.
+            if (dataReceivedCallback) dataReceivedCallback((const char *) payload, payloadLen, origin);
+        } else if (msgType == MESH_MSG_TOPO_REQ) {
+            // Odpowiadamy z petli glownej: tutaj slot transakcji bywa jeszcze zajety.
+            topoRespPendingTo = origin;
+        } else if (msgType == MESH_MSG_TOPO_RESP) {
+            // Lista sasiadow odleglego wezla: do mapy i od razu na serial, zeby
+            // kolektor przy PC widzial odpowiedz w tym samym formacie co "MAP".
+            uint8_t count = payloadLen > 0 ? payload[0] : 0;
+            if ((uint16_t) 1 + (uint16_t) count * MESH_NEIGHBOR_ENTRY > payloadLen) return;
+            Serial.print(F("MAP RESP "));
+            Serial.print(origin);
+            Serial.print(' ');
+            Serial.println(count);
+            for (uint8_t i = 0; i < count; i++) {
+                uint8_t id = payload[1 + i * MESH_NEIGHBOR_ENTRY];
+                uint8_t pl = payload[2 + i * MESH_NEIGHBOR_ENTRY];
+                if (id == 0) continue;
+                if (id != manager->nodeId) addEdge(origin, id, pl);
+                Serial.print(F("MAP E "));
+                Serial.print(origin);
+                Serial.print(' ');
+                Serial.print(id);
+                Serial.print(' ');
+                Serial.print(pl);
+                Serial.println(F(" 0"));
+            }
+        }
         return;
     }
     if (frozen) return;      // OTA: nie forwardujemy cudzych ramek
@@ -449,10 +618,10 @@ void MeshRouter::handleData(uint8_t *body, uint8_t len, uint8_t radioSender) {
         Serial.println(F("MESH | TTL wyczerpany - porzucam ramke"));
         return;
     }
-    forwardData(origin, finalDest, (uint8_t) (ttl - 1), flowId, payload, payloadLen);
+    forwardData(msgType, origin, finalDest, (uint8_t) (ttl - 1), flowId, payload, payloadLen);
 }
 
-bool MeshRouter::forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl,
+bool MeshRouter::forwardData(uint8_t msgType, uint8_t origin, uint8_t finalDest, uint8_t ttl,
                              uint8_t flowId, const uint8_t *payload, uint8_t payloadLen) {
     uint8_t nextHop = getNextHop(finalDest);
     if (nextHop == 0) {
@@ -469,7 +638,7 @@ bool MeshRouter::forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl,
         // Slot wolny: ramka skladana wprost w buforze nadawczym radia (bez kopii).
         uint8_t *frame = manager->acquireTxBuffer();
         if (frame != nullptr) {
-            uint8_t total = composeDataFrame(frame, origin, finalDest, ttl, flowId,
+            uint8_t total = composeDataFrame(frame, msgType, origin, finalDest, ttl, flowId,
                                              payload, payloadLen);
             hopRetriesLeft = MESH_HOP_RETRIES;
             hopDest = nextHop;
@@ -491,8 +660,8 @@ bool MeshRouter::forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl,
     // jej radiowe ACK, wiec zadne ponowienie z tamtej strony nie nadejdzie.
     // Odkladamy ja do jednego gniazda i wysylamy z loop(), gdy slot sie zwolni.
     if (pendingForwardLen == 0) {
-        pendingForwardLen = composeDataFrame(pendingForward, origin, finalDest, ttl, flowId,
-                                             payload, payloadLen);
+        pendingForwardLen = composeDataFrame(pendingForward, msgType, origin, finalDest, ttl,
+                                             flowId, payload, payloadLen);
         pendingForwardHop = nextHop;
         pendingForwardDeadline = millis() + 2500;
         Serial.println(F("MESH | forward odlozony (slot transakcji zajety)"));
@@ -520,27 +689,4 @@ void MeshRouter::printState() {
     Serial.print(F(" retry=")); Serial.print(hopRetryPending);
     Serial.print(F(" fwd=")); Serial.print(pendingForwardLen);
     Serial.print(F(" frozen=")); Serial.println(frozen);
-}
-
-void MeshRouter::printTopology() {
-    Serial.println(F("MESH | sasiedzi (id, tlumienie dB):"));
-    for (auto &n : neighbors) {
-        if (n.id == 0) continue;
-        Serial.print(F("  "));
-        Serial.print(n.id);
-        Serial.print(F(" pl="));
-        Serial.println(n.pathLossDb);
-    }
-    Serial.println(F("MESH | trasy (cel via nastepny, koszt, seq):"));
-    for (auto &r : routes) {
-        if (r.dest == 0) continue;
-        Serial.print(F("  "));
-        Serial.print(r.dest);
-        Serial.print(F(" via "));
-        Serial.print(r.nextHop);
-        Serial.print(F(" koszt="));
-        Serial.print(r.metric);
-        Serial.print(F(" seq="));
-        Serial.println(r.seq);
-    }
 }
