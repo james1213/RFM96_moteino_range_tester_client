@@ -84,6 +84,23 @@ bool oledPresent = false;
 
 boolean runEvery(unsigned long interval);
 
+// Dopisuje napis z PROGMEM / liczbe do bufora i zwraca, ile znakow doszlo.
+// Rodzina printf kosztowalaby ~1,1 KB flasha, a String - sterty przy kazdej wysylce.
+static uint8_t appendFlash(char *dst, const char *flashSrc) {
+    uint8_t n = 0;
+    char c;
+    while ((c = (char) pgm_read_byte(flashSrc++)) != 0) dst[n++] = c;
+    return n;
+}
+
+static uint8_t appendNumber(char *dst, long value) {
+    char tmp[12];
+    ltoa(value, tmp, 10);
+    uint8_t n = 0;
+    while (tmp[n] != 0) { dst[n] = tmp[n]; n++; }
+    return n;
+}
+
 
 void setupSerial();
 
@@ -93,9 +110,14 @@ void setupFlash();
 
 void setupDisplay();
 
-void displayCountAndRssi(const String &str);
+void displayCountAndRssi(const char *payload);
 
-void dataReceived(String &str, uint8_t senderId);
+void dataReceived(const char *payload, uint8_t len, uint8_t origin);
+
+// Ta sama tresc moze przyjsc wprost od sasiada (ramka typu APP) albo przez mesh -
+// radio podaje ja jako bufor do zapisu, mesh jako gotowy C-string, wiec potrzebne
+// sa dwie sygnatury i jeden wspolny kod nizej.
+void radioDataReceived(char *payload, uint8_t len, uint8_t senderId);
 
 void setup() {
     // Pierwsza instrukcja: wolny obszar miedzy sterta a stosem dostaje wzor, z ktorego
@@ -111,13 +133,12 @@ void setup() {
 }
 
 void setupRadio() {
-    manager->onDataReceived(dataReceived); // stare <DAT> wprost - zgodnosc wstecz
-//    manager->onOtaDataReceived(radioOtaDataReceived);
-    manager->onOtaDataReceived([](String &str, uint8_t senderId){
-        radioOta->radioOtaDataReceived(str, senderId);
+    manager->onDataReceived(radioDataReceived); // ramka typu APP wprost od sasiada
+    manager->onOtaDataReceived([](char *str, uint8_t len, uint8_t senderId) {
+        radioOta->radioOtaDataReceived(str, len, senderId);
     });
-    manager->onMeshDataReceived([](String &str, uint8_t senderId){
-        mesh->radioMeshDataReceived(str, senderId);
+    manager->onMeshDataReceived([](uint8_t *payload, uint8_t len, uint8_t senderId){
+        mesh->radioMeshDataReceived(payload, len, senderId);
     });
     manager->onAnyFrameReceived([](uint8_t senderId){
         mesh->noteFrameFrom(senderId); // kazda ramka = dowod zycia sasiada
@@ -206,7 +227,7 @@ void setupDisplay() {
 // wylacznie zmienione komorki znakowe (zwykle 1-2 cyfry, ~1-2 ms), a linia mocy
 // przerysowuje sie tylko przy faktycznej zmianie ktorejs z mocy. Przepisywanie
 // calej linii co sekunde bylo widoczne jako mruganie ekranu.
-void displayCountAndRssi(const String &str) {
+void displayCountAndRssi(const char *payload) {
     static char prevTopLine[11] = "";  // poprzednia klatka gornej linii (10 komorek 2X po 12 px)
     static int8_t prevOwnPower = -1;   // -1 = jeszcze nic nie narysowano
     static int prevPeerPower = -128;   // -128 = znacznika [P] nie bylo ("?")
@@ -214,7 +235,6 @@ void displayCountAndRssi(const String &str) {
     // Podczas transferu OTA nie dotykamy wyswietlacza: jeden zapis I2C to kilka ms
     // blokady petli glownej, a o niezawodnosc OTA walczylismy zbyt dlugo.
     if (!oledPresent || radioOta->isOtaInProgress()) return;
-    const char *payload = str.c_str(); // String uniewazniony przez OOM ma bufor NULL
     if (payload == nullptr) return;
     const char *counter = strstr(payload, "[#"); // strstr zamiast String::indexOf - zero alokacji
     if (counter == nullptr) return;
@@ -305,32 +325,34 @@ void loop() {
         // sie rozeszly. Widziane na sprzecie: kazda wymiana konczyla sie timeoutem.
         Serial.println();
 
-        String str;
-        // "Hello World from N to M [#" (do 30 znakow przy 3-cyfrowych id) + do 6 cyfr
-        // licznika + "][P" + 2 cyfry mocy + 51 (sufiks) = do 92 znakow. Rezerwa musi
-        // pokrywac calosc, inaczej realokacja przy kazdej wiadomosci podnosi szczyt sterty.
-        str.reserve(92);
-        str += F("Hello World from ");
-        str += (int) NODE_ID;        // nadawca i adresat jako id wezlow, nie role -
-        str += F(" to ");            // przy cyklicznym actualDest tekst musi mowic prawde
-        str += (int) actualDest;
-        str += F(" [#");
-        str += count++;
-        str += F("][P"); // znacznik APC: moc, z jaka ta wiadomosc jest nadawana
-        str += (int) manager->getEffectiveTxPower(); // moc FAKTYCZNEGO nadania; int8_t bez rzutu trafilby w concat(char)
-        str += F("] with ACK | test string 1234567890ABCDEFGHIJKLMNOP");
+        // Tresc skladana w buforze na stosie, bez Stringa i bez sterty. Napisy stale
+        // siedza w PROGMEM (PSTR), wiec nie zajmuja RAM-u przez cale zycie programu -
+        // to samo w sobie oszczedza kilkadziesiat bajtow wzgledem zwyklych literalow.
+        char payload[100];
+        uint8_t n = 0;
+        n += appendFlash(payload + n, PSTR("Hello World from "));
+        n += appendNumber(payload + n, NODE_ID);   // nadawca i adresat jako id wezlow,
+        n += appendFlash(payload + n, PSTR(" to ")); // nie role - adresat sie zmienia
+        n += appendNumber(payload + n, actualDest);
+        n += appendFlash(payload + n, PSTR(" [#"));
+        n += appendNumber(payload + n, count++);
+        n += appendFlash(payload + n, PSTR("][P")); // znacznik APC: moc tej wiadomosci
+        n += appendNumber(payload + n, manager->getEffectiveTxPower());
+        n += appendFlash(payload + n, PSTR("] with ACK | test string 1234567890ABCDEFGHIJKLMNOP"));
+        payload[n] = 0;
         Serial.print(F("Sending payload: \""));
-        Serial.print(str);
+        Serial.print(payload);
         Serial.println(F("\""));
         // Ruch testowy idzie przez mesh: trasa (takze wieloskokowa) wybierana
         // automatycznie z tablicy tras budowanej z beaconow.
-        bool queued = mesh->send(actualDest, str,
+        bool queued = mesh->send(actualDest, (const uint8_t *) payload, n,
                       []() {
                           Serial.println(F("MAIN | OK"));
                       },
-                      [](String &payload) {
+                      [](const uint8_t *failed, uint8_t failedLen) {
                           Serial.print(F("MAIN | NOT OK, payload = "));
-                          Serial.println(payload);
+                          Serial.write(failed, failedLen);
+                          Serial.println();
                       });
         if (!queued) Serial.println(F("MAIN | send pominiety (brak trasy albo radio zajete)"));
 
@@ -346,14 +368,18 @@ void loop() {
     radioOta->loop();
 }
 
-void dataReceived(String &str, uint8_t senderId) {
+void dataReceived(const char *payload, uint8_t len, uint8_t origin) {
+    (void) len;
     Serial.print(F("MAIN | Received data: \""));
-    Serial.print(str);
+    Serial.print(payload);
     Serial.print(F("\" from senderId: "));
-    Serial.println(senderId);
-    displayCountAndRssi(str);
+    Serial.println(origin);
+    displayCountAndRssi(payload);
 }
 
+void radioDataReceived(char *payload, uint8_t len, uint8_t senderId) {
+    dataReceived(payload, len, senderId);
+}
 
 boolean runEvery(unsigned long interval) {
     static unsigned long previousMillis = 0;

@@ -1,74 +1,76 @@
 //
-// MeshRouter - prosta siec kratowa (mesh) nad RadioManagerem.
+// Mesh: automatyczny routing po jakosci lacza (DSDV w wersji na 2 KB RAM).
 //
-// ZASADA DZIALANIA
-//   Kazdy wezel co MESH_BEACON_INTERVAL_MS rozglasza beacon (broadcast, bez ACK)
-//   ze swoja tablica tras: "<MSH>B?<mocTx>?<seq>?<cel>:<koszt>:<seq>,...".
-//   Odbiorca beaconu:
-//     - mierzy TLUMIENIE LACZA do nadawcy: pathLoss = mocTx(z beaconu) - RSSI.
-//       To miara niezalezna od mocy nadawania (ktora u nas zmienia APC w locie),
-//       wygladzana EMA, bo RSSI skacze o +-kilka dB miedzy ramkami.
-//     - aktualizuje trasy w stylu DSDV (wektor odleglosci z numerami sekwencyjnymi):
-//       koszt trasy = koszt lacza do sasiada + koszt ogloszony przez sasiada.
-//       Nowszy numer sekwencyjny celu zawsze wygrywa (to lamie petle); przy tym
-//       samym numerze trasa zmienia sie tylko, gdy jest lepsza o histereze -
-//       inaczej trasy trzepotalyby przy kazdym wahnieciu RSSI w ruchu.
-//   Dane: "<MSH>D?<zrodlo>?<cel>?<ttl>?<id>?<tresc>" - unicast skok po skoku,
-//   kazdy skok z ACK radiowym i ponowieniami; po wyczerpaniu ponowien trasy przez
-//   tego sasiada sa uniewazniane od razu (wezly sa w ruchu - nie czekamy na beacon).
-//   Duplikaty wykrywa pierscien (zrodlo, id) - ramka krazaca wraca i ginie, TTL
-//   dobija reszte.
+// Jak mierzymy jakosc lacza
+// -------------------------
+// Kazdy beacon niesie moc, z jaka zostal nadany. Odbiorca zna wiec TLUMIENIE
+// SCIEZKI: tlumienie = moc nadania - RSSI odbioru. To miara lacza, a nie ustawien
+// nadajnika - dwa wezly blisko siebie maja male tlumienie niezaleznie od tego, czy
+// akurat nadaja na 2 czy 20 dBm. Surowe RSSI by sie do tego nie nadawalo: spadek
+// mocy nadawania (APC) wygladalby jak pogorszenie lacza.
 //
-// BEACONY A MOC NADAWANIA
-//   Beacony ida PRZEMIENNIE: co drugi na suficie mocy (odkrywanie odleglych
-//   wezlow - APC potrafi zejsc do 2 dBm i sam regulowany beacon zwinalby
-//   topologie do jednego lacza), a co drugi na biezacej mocy regulowanej
-//   (utrzymanie topologii z BLISKA - na suficie z malej odleglosci odbiornik
-//   ulega saturacji i beacony gina pierwsze, zabierajac cale trasy; widziane
-//   na sprzecie jako wielominutowy zastoj calego mesh). Moc wpisana w beacon
-//   czyni pomiar tlumienia poprawnym przy KAZDEJ mocy.
+// Jak wybieramy trase
+// -------------------
+// Koszt skoku = MESH_LINK_COST_BASE + 1 za kazde 8 dB tlumienia powyzej progu.
+// Skladnik bazowy premiuje trasy o mniejszej liczbie skokow (kazdy skok to czas
+// w eterze i kolejna szansa na kolizje). Trasa wygrywa, gdy ma mniejsza sume
+// kosztow; przy remisie zostaje ta obecna (histereza MESH_ROUTE_SWITCH_MARGIN),
+// bo wezly sa w ruchu i RSSI faluje o kilka dB.
 //
-// CZEGO TA WERSJA NIE ROBI (swiadomie):
-//   - ACK tylko skok po skoku; potwierdzenie "OK" u nadawcy oznacza dotarcie do
-//     PIERWSZEGO posrednika, nie do celu.
-//   - OTA nie przechodzi przez mesh - zostaje bezposrednie (klient -> cel).
-//   - Metryka nie niesie liczby skokow, wiec trasy dluzsze niz MESH_MAX_TTL moga
-//     zostac wyuczone - dane na nich zgina na TTL mimo poprawnych ACK skokowych.
-//     Przy skali <= 4 wezlow bez znaczenia.
-//
-
 #ifndef RFM96_MESH_ROUTER_H
 #define RFM96_MESH_ROUTER_H
+
+#pragma once
 
 #include <Arduino.h>
 #include <radiomanager/RadioManager.h>
 
 #define MESH_BEACON_INTERVAL_MS   3000  // + jitter 0-511 ms, zeby beacony sie nie zderzaly
 #define MESH_NEIGHBOR_TIMEOUT_MS  12000 // prawdziwa CISZA (zadnych ramek) = sasiad znikl;
-                                        // beacony gina w kolizjach, wiec zyciem sasiada
-                                        // jest KAZDA odebrana od niego ramka, nie sam beacon
+                                        // same zgubione beacony tras nie usmiercaja
 #define MESH_MAX_NEIGHBORS        4
 #define MESH_MAX_ROUTES           6
 #define MESH_DEDUP_SIZE           16 // musi pokryc horyzont retransmisji (~3 s watchdoga ACK)
-                                     // przy kilku wpisach/s na ruchliwym relayu
+
 #define MESH_MAX_TTL              4     // max skokow; dobija ramki, ktore ucieka dedupowi
 #define MESH_HOP_RETRIES          2     // ponowienia jednego skoku (po ACK-timeoucie radia)
-#define MESH_DATA_HEADER_MAX      24    // "<MSH>D?255?255?255?255?" = 23 znaki
 #define MESH_METRIC_INFINITY      255
 #define MESH_ROUTE_SWITCH_MARGIN  2     // histereza: nowa trasa musi byc lepsza o tyle
 #define MESH_LINK_GOOD_PATHLOSS   70    // dB; do tego tlumienia lacze kosztuje bazowe 4
 #define MESH_LINK_COST_BASE       4     // koszt idealnego skoku (premiuje mniej skokow)
+
+// ==================== BINARNY FORMAT WIADOMOSCI MESH ====================
+// Tresc ramki radiowej typu RADIO_TYPE_MESH zaczyna sie bajtem rodzaju.
+//
+//   BEACON: [1][moc nadania int8][seq][liczba tras] potem 3 B na trase:
+//           [cel][koszt][seq celu]
+//   DANE:   [2][zrodlo][cel koncowy][TTL][id strumienia] potem tresc aplikacji
+//
+// Tekstowy odpowiednik ("B?10?42?2:8:13,3:6:44") kosztowal 8-12 znakow na trase
+// i wymagal parsowania liczb przy kazdym odbiorze. Binarnie trasa to 3 bajty,
+// a odczyt to zwykle indeksowanie tablicy.
+#define MESH_MSG_BEACON       1
+#define MESH_MSG_DATA         2
+#define MESH_BEACON_HEADER    4
+#define MESH_BEACON_ROUTE_LEN 3
+#define MESH_DATA_HEADER      5
+
+// Tresc dostarczona przez mesh: wskaznik w bufor odbiorczy radia (zakonczony
+// zerem, wiec nadaje sie wprost na C-string), dlugosc i WEZEL ZRODLOWY - nie
+// nadawca ostatniego skoku.
+typedef void (*MeshDataCallback)(const char *payload, uint8_t len, uint8_t origin);
+
 
 class MeshRouter {
 public:
     MeshRouter(RadioManager *manager);
 
     void loop();                                   // beacony + starzenie tablic
-    bool send(uint8_t finalDest, const String &payload,
+    bool send(uint8_t finalDest, const uint8_t *payload, uint8_t len,
               void (*okCallback)() = nullptr,
-              void (*failCallback)(String &payload) = nullptr);
-    void onDataReceived(void (*callback)(String &payload, uint8_t origin));
-    void radioMeshDataReceived(String &str, uint8_t radioSender); // wpiecie z main.cpp
+              RadioFailCallback failCallback = nullptr);
+    void onDataReceived(MeshDataCallback callback);
+    void radioMeshDataReceived(uint8_t *payload, uint8_t len, uint8_t radioSender); // wpiecie z main.cpp
     void noteFrameFrom(uint8_t senderId);          // dowod zycia sasiada z KAZDEJ ramki
     void setFrozen(bool frozen);                   // OTA: bez beaconow i forwardingu
     uint8_t getNextHop(uint8_t dest);              // 0 = brak trasy
@@ -90,7 +92,7 @@ private:
     };
 
     RadioManager *manager;
-    void (*dataReceivedCallback)(String &payload, uint8_t origin) = nullptr;
+    MeshDataCallback dataReceivedCallback = nullptr;
 
     Neighbor neighbors[MESH_MAX_NEIGHBORS];
     Route routes[MESH_MAX_ROUTES];
@@ -108,30 +110,34 @@ private:
     uint8_t hopRetriesLeft = 0;
     uint8_t hopDest = 0;
     void (*appOkCallback)() = nullptr;              // callback aplikacji dla wlasnej wysylki
-    void (*appFailCallback)(String &payload) = nullptr;
+    RadioFailCallback appFailCallback = nullptr;
     // Timeout ACK trafil w zajete radio: ponowienie odlozone, obslugiwane w loop().
     bool hopRetryPending = false;
     unsigned long hopRetryAtMillis = 0;
     unsigned long hopRetryDeadlineMillis = 0;
     // Jedno gniazdo odlozonego forwardu: relay dostal ramke w trakcie wlasnej
     // transakcji ACK, a poprzedni skok juz ja potwierdzil - nikt jej nie ponowi.
-    String pendingForwardFrame;
+    // Bufor jest staly: kopia i tak musi powstac (tresc lezy w buforze odbiorczym,
+    // ktory nadpisze nastepna ramka), a staly bufor nie moze zawiesc ani
+    // pofragmentowac sterty.
+    uint8_t pendingForward[RADIO_PAYLOAD_CAPACITY];
+    uint8_t pendingForwardLen = 0;
     uint8_t pendingForwardHop = 0;
     unsigned long pendingForwardDeadline = 0;
 
     static MeshRouter *instance;        // trampolina dla callbackow bez kontekstu
     static void sHopAckOk();
-    static void sHopAckFail(String &taggedPayload);
-    void hopAckFail(String &taggedPayload);
+    static void sHopAckFail(const uint8_t *payload, uint8_t len);
+    void hopAckFail();
     void giveUpHop();
 
     bool sendBeacon();
-    static void composeDataFrame(String &out, uint8_t origin, uint8_t finalDest, uint8_t ttl,
-                                 uint8_t flowId, const char *payload);
-    void handleBeacon(const char *body, uint8_t radioSender);
-    void handleData(String &str, const char *body, uint8_t radioSender);
+    static uint8_t composeDataFrame(uint8_t *out, uint8_t origin, uint8_t finalDest, uint8_t ttl,
+                                    uint8_t flowId, const uint8_t *payload, uint8_t payloadLen);
+    void handleBeacon(const uint8_t *body, uint8_t len, uint8_t radioSender);
+    void handleData(uint8_t *body, uint8_t len, uint8_t radioSender);
     bool forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl, uint8_t flowId,
-                     const char *payload);
+                     const uint8_t *payload, uint8_t payloadLen);
     Neighbor *findNeighbor(uint8_t id, bool create);
     Route *findRoute(uint8_t dest, bool create);
     uint8_t linkCost(const Neighbor &n);

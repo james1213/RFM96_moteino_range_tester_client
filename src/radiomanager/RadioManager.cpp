@@ -5,18 +5,13 @@
 #include "RadioManager.h"
 
 
-// Bufory nadawcze rezerwowane tutaj, czyli w inicjalizacji globali - sterta jest
-// pusta, wiec laduja na jej dnie i nigdy nie fragmentuja niczego. Gdyby ta jedna
-// alokacja padla, plytka i tak nie nadaje sie do pracy - komunikat pojawi sie przy
-// pierwszej probie nadania ("ramka pusta albo za dluga").
 RadioManager::RadioManager() {
-    sendBuffer.reserve(RADIO_TX_BUFFER_CAPACITY);
-    ackSendBuffer.reserve(RADIO_ACK_BUFFER_CAPACITY);
+    // Bufory sa tablicami skladowymi - nie ma tu nic do zarezerwowania. Konstruktor
+    // zostaje, bo warstwy wyzej trzymaja wskaznik na obiekt tworzony przez new.
 }
 
 void RadioManager::setupRadio(long frequency, int ss, int reset, int dio0, uint8_t _nodeId, void(*receiveDoneCallback)(int), void(*txDoneCallback)()) {
     nodeId = _nodeId;
-//    LoRa.setPins(10, 7, 2);
     LoRa.setPins(ss, reset, dio0);
     // Po samoczynnym reboocie (brown-out w trakcie nadawania) modul potrafi nie
     // odpowiedziec przy pierwszym podejsciu. Ciche while(true) zamienialo to w
@@ -35,8 +30,20 @@ void RadioManager::setupRadio(long frequency, int ss, int reset, int dio0, uint8
     LoRa_rxMode();
 }
 
-void RadioManager::onDataReceived(void(*callback)(String &receivedText, uint8_t senderId)) {
+void RadioManager::onDataReceived(RadioTextCallback callback) {
     dataReceivedCallback = callback;
+}
+
+void RadioManager::onOtaDataReceived(RadioTextCallback callback) {
+    otaDataReceivedCallback = callback;
+}
+
+void RadioManager::onMeshDataReceived(RadioBytesCallback callback) {
+    meshDataReceivedCallback = callback;
+}
+
+void RadioManager::onAnyFrameReceived(void (*callback)(uint8_t senderId)) {
+    anyFrameReceivedCallback = callback;
 }
 
 void RadioManager::onDataSent(void(*callback)()) {
@@ -55,12 +62,24 @@ uint8_t RadioManager::getSenderIdOfLastMessage() {
     return senderIdOfLastMessage;
 }
 
+int RadioManager::getLastRssi() {
+    return lastRssi;
+}
+
 bool RadioManager::isTransmissionFinished() {
     return transmissionFinished;
 }
 
-bool RadioManager::isNeedToSendAckToSender(){
+bool RadioManager::isNeedToSendAckToSender() {
     return needToSendAckToSender;
+}
+
+bool RadioManager::isDataSent() {
+    return transmissionFinished;
+}
+
+void RadioManager::setSendAckAutomaticly(bool value) {
+    sendAckAutomaticly = value;
 }
 
 void RadioManager::loop() {
@@ -76,7 +95,7 @@ void RadioManager::loop() {
 
 // Awaryjne odblokowanie nadajnika: gdyby przerwanie TxDone przepadlo (wyscig w
 // bibliotece przy async endPacket), transmissionFinished nigdy nie wroci na true,
-// sendBuffer nie zostalby oprozniony i kazda kolejna wysylka bylaby odrzucana
+// bufor nie zostalby oprozniony i kazda kolejna wysylka bylaby odrzucana
 // w nieskonczonosc. Po timeoucie wymuszamy powrot do RX i domkniecie cyklu.
 void RadioManager::txStuckWatchdogLoop() {
     if (!transmissionFinished && millis() - txStartMillis > txStuckTimeout) {
@@ -88,45 +107,90 @@ void RadioManager::txStuckWatchdogLoop() {
 }
 
 void RadioManager::sendLoop() {
-    if (transmissionFinished) {
-        if (!transmissionClenedUp) {
-            transmissionClenedUp = true;
-            DEBUGlogln(F("transmission finished!"));
-            if (LOG_ACTIVE) {
-                DEBUGlog(F("SENDING TIME = "));
-                DEBUGlog(String(txDoneTime - sendingTime));
-                DEBUGlogln(F(" us"));
-            }
-            if (dataSentCallback) {
-                dataSentCallback();
-            }
-        } else if (txPending || ackSendBuffer.length() > 0) {
-            // Flagi transmisji ustawia dopiero startSending, i to tylko gdy naprawde
-            // ruszy nadawanie. Wczesniej zerowalismy je TUTAJ, wiec gdy startSending
-            // przerwal z braku RAM, transmissionFinished zostawalo false na zawsze -
-            // przerwanie TxDone nigdy nie mialo skad przyjsc i radio wisialo do
-            // zadzialania watchdoga (2 s), a pakiet i tak przepadal.
-            DEBUGlogln(F("[RFM96] Sending another packet ... "));
-            if (ackSendBuffer.length() > 0) {
-                DEBUGlogln(F("[RFM96] Sending ACK packet ... "));
-                frameTxPwrOverride = -1; // ACK-i zawsze moca regulowana
-                if (startSending(ackSendBuffer, ackSendBufferDest, false)) ackSendBuffer = "";
-            } else {
-                DEBUGlogln(F("[RFM96] Sending normal packet ... "));
-                // Bufor zostaje przy niepowodzeniu - kolejny obieg petli sprobuje ponownie,
-                // zamiast po cichu gubic pakiet (razem z ewentualnym wymuszeniem mocy).
-                frameTxPwrOverride = sendBufferTxPwrOverride;
-                if (startSending(sendBuffer, sendBufferDest, sendBufferAckReq)) {
-                    // Tresc NIE jest kasowana: ramka z zadaniem ACK zostaje jako payload
-                    // ewentualnego ponowienia (resendRetained) i callbacku bledu.
-                    txPending = false;
-                    retainedFrameValid = sendBufferAckReq;
-                    sendBufferTxPwrOverride = -1;
-                }
-                frameTxPwrOverride = -1;
-            }
+    if (!transmissionFinished) return;
+    if (!transmissionClenedUp) {
+        transmissionClenedUp = true;
+        DEBUGlogln(F("transmission finished!"));
+        if (dataSentCallback) {
+            dataSentCallback();
         }
+        return;
     }
+    // Potwierdzenia maja pierwszenstwo: druga strona odlicza swoj timeout ACK,
+    // a nasza wlasna ramka moze poczekac jeden obieg petli.
+    if (ackPending) {
+        DEBUGlogln(F("[RFM96] Sending ACK packet ... "));
+        frameTxPwrOverride = -1; // ACK-i zawsze moca regulowana
+        if (startSending(ackPayload, RADIO_ACK_PAYLOAD_SIZE, ackSendBufferDest,
+                         RADIO_TYPE_ACK, false)) {
+            ackPending = false;
+        }
+        return;
+    }
+    if (txPending) {
+        DEBUGlogln(F("[RFM96] Sending normal packet ... "));
+        // Bufor zostaje przy niepowodzeniu - kolejny obieg petli sprobuje ponownie,
+        // zamiast po cichu gubic pakiet (razem z ewentualnym wymuszeniem mocy).
+        frameTxPwrOverride = sendBufferTxPwrOverride;
+        if (startSending(txPayload, txLength, sendBufferDest, txType, sendBufferAckReq)) {
+            // Tresc NIE jest kasowana: ramka z zadaniem ACK zostaje jako payload
+            // ewentualnego ponowienia (resendRetained) i callbacku bledu.
+            txPending = false;
+            retainedFrameValid = sendBufferAckReq;
+            sendBufferTxPwrOverride = -1;
+        }
+        frameTxPwrOverride = -1;
+    }
+}
+
+// Odczyt ramki z FIFO do rxPayload. false = ramka nie jest dla nas (obcy adresat,
+// wlasne echo, smiec albo stary format tekstowy) i nie wolno jej dalej obrabiac.
+bool RadioManager::readReceivedFrame() {
+    // RSSI odczytany zanim cokolwiek innego zdazy sie wydarzyc - rejestr PktRssiValue
+    // nadpisuje dopiero kolejny odebrany pakiet. Kontekst petli glownej (nie ISR),
+    // wiec dostep po SPI jest bezpieczny.
+    lastRssi = LoRa.packetRssi();
+    int size = receivedPacketSize;
+    rxLength = 0;
+    if (size < RADIO_HEADER_SIZE || size > RADIO_HEADER_SIZE + RADIO_PAYLOAD_CAPACITY) {
+        while (LoRa.available()) LoRa.read();
+        DEBUGlogln(F("RadioManager | ramka o zlej dlugosci - odrzucam"));
+        return false;
+    }
+    uint8_t header[RADIO_HEADER_SIZE];
+    for (uint8_t i = 0; i < RADIO_HEADER_SIZE; i++) header[i] = (uint8_t) LoRa.read();
+    uint8_t len = (uint8_t) (size - RADIO_HEADER_SIZE);
+    for (uint8_t i = 0; i < len; i++) rxPayload[i] = (uint8_t) LoRa.read();
+    rxPayload[len] = 0; // tresci tekstowe ida w gore jako gotowy C-string
+    while (LoRa.available()) LoRa.read();
+
+    // Znacznik protokolu odsiewa smiec i ramki starego, tekstowego firmware
+    // (tam bajt 3 to cyfra albo malpa) zanim zinterpretujemy cokolwiek innego.
+    if ((header[3] & RADIO_PROTO_MASK) != RADIO_PROTO_MARK) {
+        DEBUGlogln(F("RadioManager | obcy format ramki - odrzucam"));
+        return false;
+    }
+    destinationIdOfLastMessage = header[0];
+    senderIdOfLastMessage = header[1];
+    receivedMessageIdOfLastMessage = header[2];
+    lastFrameType = header[3] & RADIO_TYPE_MASK;
+    rxLength = len;
+
+    if (destinationIdOfLastMessage != nodeId
+        && destinationIdOfLastMessage != RADIO_BROADCAST_ID) {
+        DEBUGlogln(F("This is not a destination address, ignoring message"));
+        return false;
+    }
+    // Ramka "od nas samych" nie ma prawa istniec: to echo wlasnego payloadu
+    // odczytane z FIFO po wyscigu z nadawaniem albo przeklamany naglowek.
+    if (senderIdOfLastMessage == nodeId || senderIdOfLastMessage == 0) {
+        Serial.println(F("RadioManager | ramka z wlasnym id nadawcy - odrzucam"));
+        return false;
+    }
+    // Broadcast nikt nie kwituje - nie ma jednego adresata, ktory mialby to zrobic.
+    needToSendAckToSender = (header[3] & RADIO_FLAG_ACK_REQ) != 0
+                            && destinationIdOfLastMessage == nodeId;
+    return true;
 }
 
 void RadioManager::receiveLoop() {
@@ -134,101 +198,57 @@ void RadioManager::receiveLoop() {
         zeroLengthPacketReceived = false;
         DEBUGlogln(F("ERROR: Received 0 lenght packet!!!"));
     }
-    if (receivedFlag) {
-        receivedFlag = false;
-        String str = readReceivedData();
+    if (!receivedFlag) return;
+    receivedFlag = false;
+    if (!readReceivedFrame()) return;
 
-        DEBUGlog(F("[ACK] | before extractMessageIdAndSenderIdAndDestinationIdFromReceivedData = "));
-        DEBUGlogln(str);
-        extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(str);
-        DEBUGlog(F("[ACK] | extracted senderIdOfLastMessage = "));
-        DEBUGlogln(senderIdOfLastMessage);
-        DEBUGlog(F("[ACK] | extracted receivedMessageIdOfLastMessage = "));
-        DEBUGlogln(receivedMessageIdOfLastMessage);
-        DEBUGlog(F("[ACK] | extracted needToSendAckToSender = "));
-        DEBUGlogln(needToSendAckToSender);
-        DEBUGlog(F("[ACK] | after extractMessageIdAndSenderIdAndDestinationIdFromReceivedData = "));
-        DEBUGlogln(str);
+    // KAZDA poprawnie zaadresowana ramka (dane, ACK, beacon) jest dowodem, ze
+    // lacze od nadawcy zyje - mesh odswieza tym swoich sasiadow, zeby zgubione
+    // beacony (broadcast bez ACK, gina w kolizjach) nie usmiercaly zywych tras.
+    if (anyFrameReceivedCallback) {
+        anyFrameReceivedCallback(senderIdOfLastMessage);
+    }
 
-        if (destinationIdOfLastMessage == nodeId
-            || destinationIdOfLastMessage == RADIO_BROADCAST_ID) {
-            DEBUGlogln(F("This is a destination address"));
-        } else {
-            DEBUGlogln(F("This is not a destination address, ignoring message"));
-            return;
-        }
-        // Ramka "od nas samych" nie ma prawa istniec: to echo wlasnego payloadu
-        // odczytane z FIFO po wyscigu z nadawaniem albo przeklamany naglowek.
-        if (senderIdOfLastMessage == nodeId) {
-            Serial.println(F("RadioManager | ramka z wlasnym id nadawcy - odrzucam"));
-            return;
-        }
+    // Typ ramki zdjety z naglowka w readReceivedFrame - dalej decyduje o tym,
+    // ktora warstwa dostanie tresc.
+    uint8_t frameType = lastFrameType;
 
-        // KAZDA poprawnie zaadresowana ramka (dane, ACK, beacon) jest dowodem, ze
-        // lacze od nadawcy zyje - mesh odswieza tym swoich sasiadow, zeby zgubione
-        // beacony (broadcast bez ACK, gina w kolizjach) nie usmiercaly zywych tras.
-        if (anyFrameReceivedCallback && senderIdOfLastMessage != 0) {
-            anyFrameReceivedCallback(senderIdOfLastMessage);
-        }
-
-        if (isAckPayloadAndValidMessageId(str) && waitingForAck) {
+    if (frameType == RADIO_TYPE_ACK) {
+        // Potwierdzenie: [id kwitowanej ramki][RSSI, z jakim ja uslyszano].
+        if (rxLength >= RADIO_ACK_PAYLOAD_SIZE && waitingForAck
+            && pendingAckMessageId != 0 && rxPayload[0] == pendingAckMessageId) {
             DEBUGlogln(F("Received ACK"));
-            if (LOG_ACTIVE) {
-                DEBUGlog(F("RECEIVED ACK TIME = "));
-                DEBUGlog(String(micros() - sendingTime));
-                DEBUGlogln(F(" us"));
-            }
             ackReceived = true;
             waitingForAck = false;
             pendingAckMessageId = 0;
-            apcOnAckPayload(str); // zwrotka "@<rssi>" -> krok regulatora mocy
+            apcOnAck((int8_t) rxPayload[1]); // zwrotka RSSI -> krok regulatora mocy
             if (ackReceivedCallback) {
                 ackReceivedCallback();
             }
         } else {
-            if (isAckPayload(str)) {
-                // spozniony/niedopasowany ACK - nie publikuj go jako danych
-                DEBUGlogln(F("RadioManager | stale/unmatched ACK - ignoring"));
-                return;
-            }
-            if (receivedMessageIdOfLastMessage != 0) {
-                DEBUGlogln(F("RadioManager | checking if it is need to send ACK"));
-                DEBUGlog(F("RadioManager | !isAckPayload(str) = "));
-                DEBUGlogln(!isAckPayload(str));
-                DEBUGlog(F("RadioManager | needToSendAckToSender = "));
-                DEBUGlogln(needToSendAckToSender);
-                if (!isAckPayload(str) && needToSendAckToSender) {
-                    DEBUGlogln(F("RadioManager | inside: !isAckPayload(str) && needToSendAckToSender && sendAckAutomaticly"));
-                    sendAck();
-                }
-            } else {
-                DEBUGlogln(F("[ACK] | Can not extract message id from received message"));
-            }
+            // spozniony/niedopasowany ACK - nie publikuj go jako danych
+            DEBUGlogln(F("RadioManager | stale/unmatched ACK - ignoring"));
+        }
+        return;
+    }
 
+    if (needToSendAckToSender && sendAckAutomaticly) {
+        sendAck();
+    }
 
-            // Znacznik zdejmowany remove() W MIEJSCU: substring(5) tworzyl druga
-            // pelna kopie ramki (do ~130 B) w najciasniejszym momencie odbioru.
-            if (isOtaPayload(str)) {
-                DEBUGlogln(F("Received OTA message"));
-                str.remove(0, 5);
-                if (otaDataReceivedCallback) {
-                    otaDataReceivedCallback(str, senderIdOfLastMessage);
-                }
-            } else if (isMeshPayload(str)) {
-                str.remove(0, 5);
-                if (meshDataReceivedCallback) {
-                    meshDataReceivedCallback(str, senderIdOfLastMessage);
-                }
-            } else if (isDataPayload(str)){
-                DEBUGlogln(F("Received DATA message"));
-                str.remove(0, 5);
-                if (dataReceivedCallback) {
-                    dataReceivedCallback(str, senderIdOfLastMessage);
-                }
-            } else {
-                DEBUGlog(F("Wrong message format, message: "));
-                DEBUGlogln(str);
-            }
+    if (frameType == RADIO_TYPE_OTA) {
+        DEBUGlogln(F("Received OTA message"));
+        if (otaDataReceivedCallback) {
+            otaDataReceivedCallback((char *) rxPayload, rxLength, senderIdOfLastMessage);
+        }
+    } else if (frameType == RADIO_TYPE_MESH) {
+        if (meshDataReceivedCallback) {
+            meshDataReceivedCallback(rxPayload, rxLength, senderIdOfLastMessage);
+        }
+    } else if (frameType == RADIO_TYPE_APP) {
+        DEBUGlogln(F("Received DATA message"));
+        if (dataReceivedCallback) {
+            dataReceivedCallback((char *) rxPayload, rxLength, senderIdOfLastMessage);
         }
     }
 }
@@ -236,133 +256,17 @@ void RadioManager::receiveLoop() {
 void RadioManager::sendAck() {
     DEBUGlog(F("Sending ACK to address: "));
     DEBUGlogln(senderIdOfLastMessage);
-    // Skladane wprost w buforze ACK (pojemnosc zarezerwowana raz) - bez Stringa
-    // tymczasowego i bez kopii. Nowszy ACK moze nadpisac starszy, ktory jeszcze nie
-    // wyszedl - nadawca tamtej ramki i tak ja ponowi.
-    ackSendBuffer = "!";
-    ackSendBuffer.concat(receivedMessageIdOfLastMessage);
-    // Zwrotka APC: RSSI, z jakim uslyszelismy kwitowana ramke (lastRssi jest z TEJ
-    // ramki - ta sama iteracja receiveLoop). Stary parser czyta "!<id>@<rssi>" bez
-    // zmian, bo toInt() konczy na '@'.
-    ackSendBuffer.concat('@');
-    ackSendBuffer.concat(lastRssi);
+    // Dwa bajty w osobnym, malym buforze: id kwitowanej ramki i RSSI, z jakim ja
+    // uslyszelismy (zwrotka dla regulatora mocy drugiej strony). Osobny bufor,
+    // bo potwierdzenie musi moc wyjsc takze wtedy, gdy nasza wlasna ramka czeka
+    // w buforze nadawczym na swoje ACK.
+    ackPayload[0] = receivedMessageIdOfLastMessage;
+    int rssi = lastRssi;
+    if (rssi < -128) rssi = -128;
+    if (rssi > 127) rssi = 127;
+    ackPayload[1] = (uint8_t) (int8_t) rssi;
     ackSendBufferDest = senderIdOfLastMessage;
-}
-
-int RadioManager::getLastRssi() {
-    return lastRssi;
-}
-
-String RadioManager::readReceivedData() {
-    // RSSI odczytany zanim cokolwiek innego zdazy sie wydarzyc - rejestr PktRssiValue
-    // nadpisuje dopiero kolejny odebrany pakiet. Kontekst petli glownej (nie ISR),
-    // wiec dostep po SPI jest bezpieczny.
-    lastRssi = LoRa.packetRssi();
-    String str = "";
-    str.reserve(receivedPacketSize + 1); // jedna alokacja zamiast realokacji przy kazdym znaku
-//    for(int & receivedByte : receivedBytes) {
-//        receivedByte = 0;
-//    }
-//    int index = 0;
-    while (LoRa.available()) {
-//        receivedBytes[index] = LoRa.read();
-        str += (char) LoRa.read();
-//        str += (char) receivedBytes[index];
-//        index++;
-    }
-//    Serial.print(F("readReceivedData, str.length()")); Serial.println(str.length());
-
-//    int receivedBytes[256];
-//    int index = 0;
-//    while (LoRa.available()) {
-//        receivedBytes[index++] = LoRa.read();
-//    }
-//    Serial.print(F("readReceivedData, str.length()")); Serial.println(str.length());
-
-
-//    DEBUGlog(F("BEFORE remove: "));
-//    DEBUGlogln(str);
-//    str.remove(str.indexOf("`")); //TODO usunięcie tylko ostatniego takiego znaku
-
-    str.remove(str.lastIndexOf("`")); //TODO usunięcie tylko ostatniego takiego znaku
-//    str.remove(str.length() - 1);
-//    DEBUGlog(F("AFTER remove: "));
-//    DEBUGlogln(str);
-
-    DEBUGlogln();
-    DEBUGlogln(F("[RFM96] Received packet!"));
-
-    // print data of the packet
-    DEBUGlog(F("[RFM96] Data:\t\t"));
-    DEBUGlogln(str);
-
-//        // print senderIdOfLastMessage
-//        DEBUGlog(F("[RFM96] SendeId:\t\t"));
-//        DEBUGlogln(radio.getSenderId());
-
-    // Calosc pod if: DEBUGlog wycisza tylko wydruk, argumenty i tak by sie policzyly,
-    // a packetSnr/packetFrequencyError to lacznie ~5 odczytow rejestrow po SPI na
-    // KAZDA odebrana ramke (takze kazdy pakiet OTA). RSSI mamy juz w lastRssi.
-    if (LOG_ACTIVE) {
-        DEBUGlog(F("[RFM96] RSSI:\t\t"));
-        DEBUGlog(lastRssi);
-        DEBUGlogln(F(" dBm"));
-
-        DEBUGlog(F("[RFM96] SNR:\t\t"));
-        DEBUGlog(LoRa.packetSnr());
-        DEBUGlogln(F(" dB"));
-
-        DEBUGlog(F("[RFM96] Frequency error:\t"));
-        DEBUGlog(LoRa.packetFrequencyError());
-        DEBUGlogln(F(" Hz"));
-    }
-
-    return str;
-}
-
-// Naglowek "adr@nadawca@id@ack@" parsowany W MIEJSCU (strtoul po c_str) i zdejmowany
-// jednym remove(). Poprzednik (splitString) robil 4 kolejne kopie reszty ramki przez
-// substring - do ~130 B chwilowej sterty na kazda odebrana ramke, akurat wtedy, gdy
-// zywa jest juz pelna kopia ramki z FIFO. Zly naglowek zeruje adresata i id, wiec
-// receiveLoop odrzuci ramke, zamiast dzialac na polach z POPRZEDNIEJ ramki.
-void RadioManager::extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(String &str) {
-    const char *base = str.c_str();
-    char *cursor;
-    unsigned long dest = strtoul(base, &cursor, 10);
-    bool ok = (cursor != base) && *cursor == '@';
-    unsigned long sender = ok ? strtoul(cursor + 1, &cursor, 10) : 0;
-    ok = ok && *cursor == '@';
-    unsigned long id = ok ? strtoul(cursor + 1, &cursor, 10) : 0;
-    ok = ok && *cursor == '@';
-    unsigned long ack = ok ? strtoul(cursor + 1, &cursor, 10) : 0;
-    ok = ok && *cursor == '@';
-    if (!ok || dest > 255 || sender > 255 || id > 255) {
-        destinationIdOfLastMessage = 0;
-        senderIdOfLastMessage = 0;
-        receivedMessageIdOfLastMessage = 0;
-        needToSendAckToSender = false;
-        return;
-    }
-    destinationIdOfLastMessage = (uint8_t) dest;
-    senderIdOfLastMessage = (uint8_t) sender;
-    receivedMessageIdOfLastMessage = (uint8_t) id;
-    needToSendAckToSender = ack != 0;
-    str.remove(0, (unsigned int) ((cursor + 1) - base));
-}
-
-bool RadioManager::isAckPayload(const String &str) {
-//    DEBUGlog(F("isAckPayload, str = "));
-//    DEBUGlogln(str);
-    return str.charAt(0) == '!';
-}
-
-// Przez referencje (bylo: przez wartosc = kopia calego payloadu przy KAZDEJ ramce).
-bool RadioManager::isAckPayloadAndValidMessageId(const String &str) {
-    if (str.charAt(0) != '!') return false;
-    // porownujemy z id ramki DAT czekajacej na ACK, a nie z zywym licznikiem
-    // messageId - ten podbija tez kazda wyslana ramka ACK
-    unsigned long id = strtoul(str.c_str() + 1, nullptr, 10); // strtoul konczy na '@'
-    return pendingAckMessageId != 0 && id == pendingAckMessageId;
+    ackPending = true;
 }
 
 void RadioManager::waitForAckTimeoutLoop() {
@@ -374,7 +278,7 @@ void RadioManager::waitForAckTimeoutLoop() {
             DEBUGlogln(F("ACK NOT RECEIVED - TIMEOUT"));
             apcOnAckTimeout();
             if (ackNotReceivedCallback) {
-                ackNotReceivedCallback(sendBuffer); // nadana ramka wciaz lezy w buforze
+                ackNotReceivedCallback(txPayload, txLength); // nadana ramka wciaz lezy w buforze
             }
         }
     }
@@ -382,7 +286,6 @@ void RadioManager::waitForAckTimeoutLoop() {
     // dluzej niz 3x timeout (ramka w buforze nadaje sie najpozniej po 2 s dzieki
     // txStuckWatchdog). Widziane na sprzecie jako trwale zakleszczenie po zbiegu
     // restartow obu wezlow: wysylki wiecznie "pominiete", timeout nigdy nie strzelal.
-    // Zgłaszamy to normalna sciezka bledu, zeby warstwa wyzej (mesh) zadzialala.
     if (waitingForAck && millis() - waitForAckStartTime >= ackTimeout * 3) {
         Serial.println(F("RadioManager | ACK watchdog: zwalniam zakleszczone flagi"));
         // Jesli uzbrojona ramka wciaz tkwi w buforze, zdejmij jej zadanie ACK -
@@ -394,7 +297,7 @@ void RadioManager::waitForAckTimeoutLoop() {
         pendingAckMessageId = 0;
         apcOnAckTimeout(); // strata jak kazda inna - APC ma ja widziec
         if (ackNotReceivedCallback) {
-            ackNotReceivedCallback(sendBuffer);
+            ackNotReceivedCallback(txPayload, txLength);
         }
     }
 }
@@ -424,17 +327,14 @@ int8_t RadioManager::getEffectiveTxPower() {
     return (apcPendingDbm >= 0) ? apcPendingDbm : txPowerDbm;
 }
 
-void RadioManager::apcOnAckPayload(const String &ackPayload) {
+void RadioManager::apcOnAck(int8_t reportedRssi) {
     if (!APC_ENABLED) return;
     ackMissStreak = 0;
-    int atPos = ackPayload.indexOf('@');
-    if (atPos < 0) return; // ACK ze starszego firmware - bez zwrotki RSSI
-    long reported = atol(ackPayload.c_str() + atPos + 1);
-    // RSSI >= 0 dBm jest fizycznie niemozliwe dla LoRa: to obcieta zwrotka ("!17@"
-    // po cichym OOM u peera daje atol("") == 0) albo smieci. Regulowanie wedlug takiej
-    // wartosci sciagaloby moc W DOL dokladnie wtedy, gdy peerowi brakuje pamieci.
-    if (reported >= 0) return;
-    peerReportedRssi = (int) reported;
+    // RSSI >= 0 dBm jest fizycznie niemozliwe dla LoRa: to smiec albo zwrotka
+    // z uszkodzonej ramki. Regulowanie wedlug takiej wartosci sciagaloby moc W DOL
+    // dokladnie wtedy, gdy lacze jest w najgorszym stanie.
+    if (reportedRssi >= 0) return;
+    peerReportedRssi = reportedRssi;
     peerRssiValid = true;
     if (apcFrozen) return;
     // Jeden krok na jedna zwrotke - tempo regulacji ogranicza naturalnie rytm
@@ -453,12 +353,7 @@ void RadioManager::apcOnAckTimeout() {
     // Seria strat = sonda mocy: kroki W GORE od mocy biezacej, po przekroczeniu
     // sufitu zawiniecie do minimum. Poprzednia polityka (skok od razu na sufit)
     // byla pulapka: z bliska sufit saturuje odbiornik, a nocny zapis pokazal 545
-    // takich epizodow, kazdy konczony dopiero powolnym zejsciem sondy w dol
-    // (rozklad markerow [P10]/[P8]/[P6]/[P4] po ~5 tys. ramek). Krok w gore
-    // z bliska nie opuszcza strefy dzialajacych mocy (epizod konczy sie po
-    // jednej serii), a w terenie dociera do sufitu w 2-4 serie - regulacja ze
-    // zwrotek i tak obsluguje stopniowe slabniecie lacza, sonda jest od strat
-    // calkowitych.
+    // takich epizodow, kazdy konczony dopiero powolnym zejsciem sondy w dol.
     if (ackMissStreak >= APC_ACK_MISS_LIMIT
         && ackMissStreak % APC_ACK_MISS_LIMIT == 0) {
         int8_t current = getEffectiveTxPower();
@@ -505,7 +400,7 @@ void RadioManager::paintFreeStack() {
 
 // Najdluzszy nietkniety pas wzoru miedzy szczytem sterty a SP = najmniejszy zapas
 // miedzy sterta a stosem, jaki wystapil od startu (razem z przerwaniami). To ta
-// liczba, a nie chwilowe "ram=", mowi, czy __malloc_margin (128 B) jest za duzy.
+// liczba, a nie chwilowe "ram=", mowi, czy zapas pamieci naprawde jest bezpieczny.
 uint16_t RadioManager::minStackGap() {
     extern int __heap_start, *__brkval;
     uint8_t *p = (uint8_t *) ((__brkval == 0) ? &__heap_start : __brkval);
@@ -523,19 +418,14 @@ uint16_t RadioManager::minStackGap() {
 
 // ==================== SKLADANIE I NADAWANIE RAMEK ====================
 //
-// Bufor nadawczy ma stala pojemnosc (RADIO_TX_BUFFER_CAPACITY) zarezerwowana raz w
-// konstruktorze. Wolajacy sklada ramke WPROST w nim: acquireTxBuffer -> zapis ->
-// commitTxBuffer. Zadnych Stringow tymczasowych ani kopii po drodze: ta goraca
-// sciezka nie alokuje nic, wiec "brak RAM" nie ma gdzie wystapic.
-//
-// Arduino String sygnalizuje brak pamieci wylacznie po cichu (operator+= ignoruje
-// blad, operator+ czysci CALY string), dlatego rozmiar sprawdza sie PRZED skladaniem
-// (txBufferFits) - wtedy concat w granicach pojemnosci nie ma prawa zawiesc.
+// Tresc jest skladana wprost w txPayload (tablica skladowa o stalym rozmiarze),
+// a naglowek dopisywany dopiero w startSending, prosto do FIFO radia. Na tej
+// sciezce nie ma ani jednej alokacji i ani jednej kopii wiecej, niz trzeba.
 
-String *RadioManager::acquireTxBuffer() {
+uint8_t *RadioManager::acquireTxBuffer() {
     // Jedna transakcja naraz: ramka czekajaca na nadanie ALBO trwajaca transakcja ACK
-    // blokuje bufor takze dla ramek bez ACK. Wczesniej ramka bez ACK (beacon) mogla
-    // wjechac w oczekiwanie na ACK; teraz nadpisalaby zachowany payload ponowienia.
+    // blokuje bufor takze dla ramek bez ACK - inaczej beacon nadpisalby tresc, ktora
+    // moze byc jeszcze potrzebna do ponowienia.
     if (txPending) {
         DEBUGlogln(F("RadioManager | busy: ramka czeka na nadanie"));
         return nullptr;
@@ -545,29 +435,30 @@ String *RadioManager::acquireTxBuffer() {
         return nullptr;
     }
     retainedFrameValid = false; // to, co lezalo w buforze, wlasnie przepada
-    sendBuffer = "";            // pojemnosc zostaje - to nie jest realokacja
-    return &sendBuffer;
+    txLength = 0;
+    return txPayload;
 }
 
 void RadioManager::releaseTxBuffer() {
-    sendBuffer = "";
+    txLength = 0;
+    retainedFrameValid = false;
 }
 
-bool RadioManager::commitTxBuffer(uint8_t address, bool ackRequested,
+bool RadioManager::commitTxBuffer(uint8_t len, uint8_t address, uint8_t type, bool ackRequested,
                                   void (*_ackReceivedCallback)(),
-                                  void (*_ackNotReceivedCallback)(String &payload),
+                                  RadioFailCallback _ackNotReceivedCallback,
                                   int8_t txPowerDbmOverride) {
     // Pusta ramka nigdy nie moze uzbroic transakcji: sendLoop nadaje tylko niepuste
-    // bufory, wiec ksiegowosc ACK dla pustej ramki wisialaby az do watchdoga (zrodlem
-    // pustych ramek byl kiedys cichy OOM Stringa). Za dluga = String realokowal bufor
-    // poza umowiona pojemnosc - takiej ramki tez nie chcemy w eterze.
-    if (sendBuffer.length() == 0 || sendBuffer.length() > RADIO_TX_BUFFER_CAPACITY) {
-        Serial.print(F("RadioManager | ERROR: ramka pusta albo za dluga ("));
-        Serial.print(sendBuffer.length());
+    // bufory, wiec ksiegowosc ACK dla pustej ramki wisialaby az do watchdoga.
+    if (len == 0 || len > RADIO_PAYLOAD_CAPACITY) {
+        Serial.print(F("RadioManager | ERROR: zla dlugosc ramki ("));
+        Serial.print(len);
         Serial.println(F(" B) - nie wyslano"));
         releaseTxBuffer();
         return false;
     }
+    txLength = len;
+    txType = type;
     sendBufferDest = address;
     sendBufferAckReq = ackRequested;
     sendBufferTxPwrOverride = txPowerDbmOverride;
@@ -581,85 +472,60 @@ bool RadioManager::commitTxBuffer(uint8_t address, bool ackRequested,
     }
     if (messageId == 0) messageId = 1;
     // Nadanie CELOWO odlozone do nastepnego obiegu petli (manager->loop() i tak
-    // wola sendLoop co obieg) - wolajacy moze jeszcze trzymac wlasne Stringi.
+    // wola sendLoop co obieg) - wolajacy moze jeszcze pracowac na swoich danych.
     txPending = true;
     return true;
 }
 
 bool RadioManager::hasRetainedFrame() {
-    return retainedFrameValid && !txPending && !waitingForAck && sendBuffer.length() > 0;
-}
-
-String &RadioManager::retainedFrame() {
-    static String none;
-    return retainedFrameValid ? sendBuffer : none;
+    return retainedFrameValid && !txPending && !waitingForAck && txLength > 0;
 }
 
 // Ponowienie ostatniej nadanej ramki z zadaniem ACK - tresc nadal lezy w buforze,
-// wiec nie ma zadnej kopii. false = ramki juz nie ma (ktos zajal bufor) albo radio zajete.
+// wiec nie ma zadnej kopii. false = ramki juz nie ma albo radio zajete.
 bool RadioManager::resendRetained(uint8_t address, void (*_ackReceivedCallback)(),
-                                  void (*_ackNotReceivedCallback)(String &payload)) {
+                                  RadioFailCallback _ackNotReceivedCallback) {
     if (!hasRetainedFrame()) return false;
-    return commitTxBuffer(address, true, _ackReceivedCallback, _ackNotReceivedCallback);
-}
-
-// "<TAG>" + tresc, skladane wprost w buforze nadawczym.
-bool RadioManager::sendWithTag(const __FlashStringHelper *tag, const String &body, uint8_t address,
-                               void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
-    String *frame = acquireTxBuffer();
-    if (frame == nullptr) return false;
-    if (!txBufferFits(body.length() + 5)) {
-        Serial.print(F("RadioManager | ERROR: ramka za dluga ("));
-        Serial.print(body.length() + 5);
-        Serial.println(F(" B) - nie wyslano"));
-        releaseTxBuffer();
-        return false;
-    }
-    *frame = tag;
-    *frame += body;
-    return commitTxBuffer(address, _ackReceivedCallback || _ackNotReceivedCallback,
+    return commitTxBuffer(txLength, address, txType, true,
                           _ackReceivedCallback, _ackNotReceivedCallback);
 }
 
-bool RadioManager::sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
-    return sendWithTag(F("<OTA>"), str, address, _ackReceivedCallback, _ackNotReceivedCallback);
-}
-
-bool RadioManager::send(String &str, uint8_t address, void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
-    return sendWithTag(F("<DAT>"), str, address, _ackReceivedCallback, _ackNotReceivedCallback);
-}
-
-// Payload JUZ ze znacznikiem ("<MSH>...", "<OTA>...") - jedna kopia do bufora nadawczego.
-bool RadioManager::sendTagged(String &taggedPayload, uint8_t address,
-                              void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
-    return sendDirectly(taggedPayload, address,
-                        _ackReceivedCallback || _ackNotReceivedCallback,
-                        _ackReceivedCallback, _ackNotReceivedCallback);
-}
-
-// Zwraca false gdy radio jest zajete (ramka czeka na wyslanie albo trwa transakcja
-// ACK) - wtedy NIC nie jest nadpisywane i nalezy ponowic wysylke pozniej. Ciche
-// nadpisywanie bufora gubilo ramki OTA, gdy ruch testowy i transfer szly rownoczesnie.
-bool RadioManager::sendDirectly(String &str, uint8_t address, bool ackRequested,
-                                void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload)) {
-    if (str.length() == 0) {
-        DEBUGlogln(F("RadioManager | pusta ramka - odrzucam"));
-        return false;
-    }
-    String *frame = acquireTxBuffer();
+bool RadioManager::sendBytes(const uint8_t *data, uint8_t len, uint8_t address, uint8_t type,
+                             bool ackRequested, void (*_ackReceivedCallback)(),
+                             RadioFailCallback _ackNotReceivedCallback) {
+    uint8_t *frame = acquireTxBuffer();
     if (frame == nullptr) return false;
-    if (!txBufferFits(str.length())) {
-        Serial.print(F("RadioManager | ERROR: ramka za dluga ("));
-        Serial.print(str.length());
+    if (!txBufferFits(len) || len == 0) {
+        Serial.print(F("RadioManager | ERROR: tresc za dluga ("));
+        Serial.print(len);
         Serial.println(F(" B) - nie wyslano"));
         releaseTxBuffer();
         return false;
     }
-    *frame = str; // pojemnosc juz jest - kopia bez malloc
-    return commitTxBuffer(address, ackRequested, _ackReceivedCallback, _ackNotReceivedCallback);
+    memcpy(frame, data, len);
+    return commitTxBuffer(len, address, type, ackRequested,
+                          _ackReceivedCallback, _ackNotReceivedCallback);
 }
 
-bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested) {
+bool RadioManager::sendText(const char *text, uint8_t address, uint8_t type,
+                            void (*_ackReceivedCallback)(),
+                            RadioFailCallback _ackNotReceivedCallback) {
+    // Zero konczace NIE leci w eter - dlugosc niesie naglowek LoRa, a odbiorca
+    // dopisuje zero sobie, w swoim buforze.
+    size_t len = strlen(text);
+    return sendBytes((const uint8_t *) text, (uint8_t) len, address, type,
+                     _ackReceivedCallback != nullptr || _ackNotReceivedCallback != nullptr,
+                     _ackReceivedCallback, _ackNotReceivedCallback);
+}
+
+bool RadioManager::sendOta(const char *text, uint8_t address,
+                           void (*_ackReceivedCallback)(),
+                           RadioFailCallback _ackNotReceivedCallback) {
+    return sendText(text, address, RADIO_TYPE_OTA, _ackReceivedCallback, _ackNotReceivedCallback);
+}
+
+bool RadioManager::startSending(const uint8_t *payload, uint8_t len, uint8_t address,
+                                uint8_t type, bool ackRequested) {
     // Najpierw warunki odroczenia BEZ zadnych efektow ubocznych - wczesniej odroczony
     // beacon aplikowal i cofal moc w kazdym obiegu petli (70 zapisow SPI i 70 linii
     // "APC: moc" na jeden 400-ms nasluch kanalu).
@@ -690,14 +556,6 @@ bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
         setTxPower(frameTxPwrOverride);
         if (apcPendingDbm < 0) apcPendingDbm = restore;
     }
-    DEBUGlog(F("Sending: ["));
-    DEBUGlog(str);
-    DEBUGlog(F("] to "));
-    DEBUGlogln(address);
-    // Ramka idzie do FIFO radia KAWALKAMI: naglowek "adr@nadawca@id@ack@", tresc,
-    // ogranicznik. Nie ma juz Stringa z gotowa ramka - to byla najwieksza pojedyncza
-    // alokacja chwilowa w systemie (~130 B na 2 KB RAM) i jedyny powod, dla ktorego
-    // nadanie z gotowego bufora moglo w ogole zawiesc na braku pamieci.
     LoRa_txMode();
     // beginPacket zwraca 0, gdy radio "wciaz nadaje" (tryb TX/CAD) - wtedy nie
     // resetuje FIFO ani dlugosci payloadu, a my nadalibysmy smieci. Zamiast tego
@@ -713,11 +571,10 @@ bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
     messageId++;
     if (messageId == 0) messageId = 1;
     if (ackRequested) {
-        pendingAckMessageId = messageId; // to id trafia do ramki i wroci w "!id"
+        pendingAckMessageId = messageId; // to id trafia do ramki i wroci w potwierdzeniu
         // Okno ACK liczymy od faktycznego nadania, nie od zakolejkowania. Ramka mogla
         // czekac w buforze (np. az watchdog odblokuje zawieszony TX) - ze stemplem
-        // z chwili zakolejkowania okno wygasaloby w momencie startu nadawania i
-        // timeout zerowalby pendingAckMessageId tuz przed nadejsciem prawdziwego ACK.
+        // z chwili zakolejkowania okno wygasaloby w momencie startu nadawania.
         waitForAckStartTime = millis();
         ackFramePendingTx = false;
     }
@@ -726,16 +583,14 @@ bool RadioManager::startSending(String &str, uint8_t address, bool ackRequested)
         LoRa_rxMode();
         return true; // ramka przepada, ale cykl jest domkniety
     }
-    LoRa.print(address);
-    LoRa.print('@');
-    LoRa.print(nodeId);
-    LoRa.print('@');
-    LoRa.print(messageId);
-    LoRa.print('@');
-    LoRa.print(ackRequested ? '1' : '0');
-    LoRa.print('@');
-    LoRa.print(str);
-    LoRa.print('`');
+    uint8_t header[RADIO_HEADER_SIZE];
+    header[0] = address;
+    header[1] = nodeId;
+    header[2] = messageId;
+    header[3] = (uint8_t) (RADIO_PROTO_MARK | (ackRequested ? RADIO_FLAG_ACK_REQ : 0)
+                           | (type & RADIO_TYPE_MASK));
+    LoRa.write(header, RADIO_HEADER_SIZE);
+    LoRa.write(payload, len);
     // Dopiero teraz - ramka jest w FIFO i nadawanie na pewno ruszy.
     transmissionFinished = false;
     transmissionClenedUp = false;
@@ -767,7 +622,7 @@ void RadioManager::printRadioDiag() {
     Serial.print(F(" pendTx="));
     Serial.print(ackFramePendingTx);
     Serial.print(F(" buf="));
-    Serial.print(txPending ? sendBuffer.length() : 0);
+    Serial.print(txPending ? txLength : 0);
     Serial.print(F(" pwr="));
     Serial.print(txPowerDbm);
     Serial.print(F(" ram="));
@@ -778,7 +633,6 @@ void RadioManager::printRadioDiag() {
 
 void RadioManager::LoRa_txMode() {
     LoRa.idle();                          // set standby mode
-//    LoRa.disableInvertIQ();               // node
 }
 
 // Kontekst przerwania (ISR)! Zadnych Serial.print ani String (malloc nie jest
@@ -800,7 +654,6 @@ void RadioManager::txDone() {
 }
 
 void RadioManager::LoRa_rxMode() {
-//    LoRa.enableInvertIQ();                // node
     LoRa.receive();                       // set receive mode
 }
 
@@ -813,22 +666,6 @@ void RadioManager::DEBUGlog(const __FlashStringHelper *ifsh) {
     if (LOG_ACTIVE) Serial.print(ifsh);
 }
 
-void RadioManager::DEBUGlogln(const String &s) {
-    if (LOG_ACTIVE) Serial.println(s);
-}
-
-void RadioManager::DEBUGlog(const String &s) {
-    if (LOG_ACTIVE) Serial.print(s);
-}
-
-void RadioManager::DEBUGlogln(unsigned char b, int base) {
-    if (LOG_ACTIVE) Serial.println(b, base);
-}
-
-void RadioManager::DEBUGlog(unsigned char b, int base) {
-    if (LOG_ACTIVE) Serial.print(b, base);
-}
-
 void RadioManager::DEBUGlogln() {
     if (LOG_ACTIVE) Serial.println();
 }
@@ -838,22 +675,6 @@ void RadioManager::DEBUGlogln(int n, int base) {
 }
 
 void RadioManager::DEBUGlog(int n, int base) {
-    if (LOG_ACTIVE) Serial.print(n, base);
-}
-
-void RadioManager::DEBUGlogln(double n, int digits) {
-    if (LOG_ACTIVE) Serial.println(n, digits);
-}
-
-void RadioManager::DEBUGlog(double n, int digits) {
-    if (LOG_ACTIVE) Serial.print(n, digits);
-}
-
-void RadioManager::DEBUGlogln(long n, int base) {
-    if (LOG_ACTIVE) Serial.println(n, base);
-}
-
-void RadioManager::DEBUGlog(long n, int base) {
     if (LOG_ACTIVE) Serial.print(n, base);
 }
 
@@ -904,51 +725,4 @@ void RadioManager::printTxPower() {
     if (txPowerDbm > 17) {
         Serial.println(F("[RADIO] Tryb wysokiej mocy (PA_DAC): Semtech zaleca duty cycle <= 1%."));
     }
-}
-
-void RadioManager::onOtaDataReceived(void (*callback)(String &, uint8_t)) {
-    otaDataReceivedCallback = callback;
-}
-
-void RadioManager::onMeshDataReceived(void (*callback)(String &, uint8_t)) {
-    meshDataReceivedCallback = callback;
-}
-
-void RadioManager::onAnyFrameReceived(void (*callback)(uint8_t senderId)) {
-    anyFrameReceivedCallback = callback;
-}
-
-bool RadioManager::isMeshPayload(String &str) {
-    const char *data = str.c_str();
-    return str.length() >= 5 && data[0] == '<' && data[1] == 'M' && data[2] == 'S'
-           && data[3] == 'H' && data[4] == '>';
-}
-
-bool RadioManager::isOtaPayload(String &str) {
-    DEBUGlog(F("isOtaPayload, str = "));
-    DEBUGlogln(str);
-
-    const char* data = str.c_str();
-    bool returnValue = data[0] == '<' && data[1] == 'O' && data[2] == 'T' && data[3] == 'A' && data[4] == '>';
-//    bool returnValue = str.startsWith("<OTA>");
-
-    DEBUGlog(F("isOtaPayload, returnValue = "));
-    DEBUGlogln(returnValue);
-    return returnValue;
-}
-
-bool RadioManager::isDataPayload(String &str) {
-    DEBUGlog(F("isDataPayload, str = "));
-    DEBUGlogln(str);
-    const char* data = str.c_str();
-    bool returnValue = data[0] == '<' && data[1] == 'D' && data[2] == 'A' && data[3] == 'T' && data[4] == '>';
-//    bool returnValue = str.startsWith("<DAT>");
-
-    DEBUGlog(F("isDataPayload, returnValue = "));
-    DEBUGlogln(returnValue);
-    return returnValue;
-}
-
-bool RadioManager::isDataSent() {
-    return transmissionFinished;
 }

@@ -7,7 +7,7 @@ MeshRouter::MeshRouter(RadioManager *manager) {
     instance = this;
 }
 
-void MeshRouter::onDataReceived(void (*callback)(String &payload, uint8_t origin)) {
+void MeshRouter::onDataReceived(MeshDataCallback callback) {
     dataReceivedCallback = callback;
 }
 
@@ -17,7 +17,7 @@ void MeshRouter::setFrozen(bool value) {
         // sprzed zamrozenia ponawialby ramki mesh w srodku transferu OTA.
         hopRetriesLeft = 0;
         hopRetryPending = false;
-        pendingForwardFrame = "";
+        pendingForwardLen = 0;
         appOkCallback = nullptr;
         appFailCallback = nullptr;
     }
@@ -25,7 +25,7 @@ void MeshRouter::setFrozen(bool value) {
 }
 
 void MeshRouter::loop() {
-    if (frozen) return; // OTA: zadnych beaconow ani forwardingu, RAM dla transferu
+    if (frozen) return; // OTA: zadnych beaconow ani forwardingu, eter dla transferu
     ageTables();
 
     // Odlozone ponowienie skoku (timeout ACK trafil w zajete radio): ma
@@ -45,18 +45,18 @@ void MeshRouter::loop() {
 
     // Odlozony forward: poprzedni skok juz potwierdzil te ramke, wiec nikt jej
     // nie ponowi - odsylamy ja, gdy tylko slot transakcji sie zwolni.
-    if (pendingForwardFrame.length() > 0 && !manager->waitingForAck && !hopRetryPending) {
+    if (pendingForwardLen > 0 && !manager->waitingForAck && !hopRetryPending) {
         if (millis() > pendingForwardDeadline) {
             Serial.println(F("MESH | odlozony forward przeterminowany - porzucam"));
-            pendingForwardFrame = "";
+            pendingForwardLen = 0;
         } else {
             hopRetriesLeft = MESH_HOP_RETRIES;
             hopDest = pendingForwardHop;
             appOkCallback = nullptr;
             appFailCallback = nullptr;
-            if (manager->sendTagged(pendingForwardFrame, pendingForwardHop,
-                                    sHopAckOk, sHopAckFail)) {
-                pendingForwardFrame = "";
+            if (manager->sendBytes(pendingForward, pendingForwardLen, pendingForwardHop,
+                                   RADIO_TYPE_MESH, true, sHopAckOk, sHopAckFail)) {
+                pendingForwardLen = 0;
             }
         }
     }
@@ -70,8 +70,8 @@ void MeshRouter::loop() {
             // broadcast nie ma ACK - zderzenie beaconow jest niewykrywalne.
             beaconDueInMs = MESH_BEACON_INTERVAL_MS + (micros() & 0x1FF);
         } else {
-            // Radio zajete albo brak RAM: ponow szybko, zamiast czekac cala kadencje -
-            // przy gestym ruchu gubilismy w ten sposob wiekszosc slotow beaconowych.
+            // Radio zajete: ponow szybko, zamiast czekac cala kadencje - przy gestym
+            // ruchu gubilismy w ten sposob wiekszosc slotow beaconowych.
             beaconDueInMs = 300 + (micros() & 0xFF);
         }
     }
@@ -170,8 +170,7 @@ void MeshRouter::ageTables() {
 // Regula DSDV dla zerwanej trasy: uniewaznienie PODBIJA numer sekwencyjny celu.
 // Bez tego wpis INF przegrywal z krazacym jeszcze ogloszeniem o tym samym seq
 // i skonczonej metryce - dwa wezly potrafily sobie nawzajem "przywracac" trase
-// do martwego celu az do nasycenia metryki (count-to-infinity). Zywy cel i tak
-// wygra: jego wlasne beacony podnosza seq co ~3 s.
+// do martwego celu az do nasycenia metryki (count-to-infinity).
 void MeshRouter::invalidateRoutesVia(uint8_t neighborId) {
     for (auto &r : routes) {
         if (r.dest != 0 && r.nextHop == neighborId && r.metric < MESH_METRIC_INFINITY) {
@@ -205,45 +204,40 @@ bool MeshRouter::sendBeacon() {
     // Moc wpisana ponizej w tresc czyni pomiar tlumienia poprawnym przy kazdej mocy.
     int8_t beaconPower = (seqToSend & 1) ? manager->getEffectiveTxPower()
                                          : manager->apcMaxDbm;
-    // Beacon skladany wprost w buforze nadawczym radia (stala pojemnosc, zero alokacji).
-    // Maksimum: 7 + 3 + 1 + 3 + 1 + MESH_MAX_ROUTES * 12 = 87 znakow < pojemnosc.
-    String *beacon = manager->acquireTxBuffer();
+    // Beacon skladany wprost w buforze nadawczym radia - zero alokacji.
+    // Najwiekszy rozmiar: 4 + MESH_MAX_ROUTES * 3 = 22 B.
+    uint8_t *beacon = manager->acquireTxBuffer();
     if (beacon == nullptr) return false;
-    *beacon = F("<MSH>B?");
-    *beacon += (int) beaconPower; // moc, z jaka beacon FAKTYCZNIE poleci
-    *beacon += '?';
-    *beacon += seqToSend;
-    *beacon += '?';
-    bool first = true;
+    uint8_t n = 0;
+    beacon[n++] = MESH_MSG_BEACON;
+    beacon[n++] = (uint8_t) beaconPower; // moc, z jaka beacon FAKTYCZNIE poleci
+    beacon[n++] = seqToSend;
+    uint8_t countIndex = n++;
+    uint8_t count = 0;
     for (auto &r : routes) {
         if (r.dest == 0) continue;
-        if (!first) *beacon += ',';
-        first = false;
-        *beacon += r.dest;
-        *beacon += ':';
-        *beacon += r.metric;
-        *beacon += ':';
-        *beacon += r.seq;
+        beacon[n++] = r.dest;
+        beacon[n++] = r.metric;
+        beacon[n++] = r.seq;
+        count++;
     }
+    beacon[countIndex] = count;
     // Broadcast bez ACK, moc przemienna - patrz komentarz wyzej.
-    bool queued = manager->commitTxBuffer(RADIO_BROADCAST_ID, false, nullptr, nullptr, beaconPower);
+    bool queued = manager->commitTxBuffer(n, RADIO_BROADCAST_ID, RADIO_TYPE_MESH, false,
+                                          nullptr, nullptr, beaconPower);
     if (queued) ownSeq = seqToSend; // seq rosnie tylko dla beaconow, ktore poszly
     return queued;
 }
 
-// body wskazuje za "B?": "<mocTx>?<seq>?<cel>:<koszt>:<seq>,..."
-// Parsowanie strtoul-em, nie strtol-em: pola sa nieujemne, a strtoul i tak musi
-// byc zlinkowany (CRC32 w OTA przekracza zakres long) - dzieki temu generyczny
-// strtol (~560 B) w ogole nie trafia do binarki. Smieci ujemne/ogromne odrzuca
-// walidacja zakresow ponizej.
-void MeshRouter::handleBeacon(const char *body, uint8_t radioSender) {
+// body wskazuje ZA bajt rodzaju: [moc nadania int8][seq][liczba tras] + 3 B na trase.
+void MeshRouter::handleBeacon(const uint8_t *body, uint8_t len, uint8_t radioSender) {
     if (radioSender == manager->nodeId || radioSender == 0) return; // nigdy sasiad z wlasnym id
-    char *cursor;
-    long beaconTxPower = (long) strtoul(body, &cursor, 10);
-    if (*cursor != '?') return;
-    long senderSeq = (long) strtoul(cursor + 1, &cursor, 10);
-    if (*cursor != '?') return;
-    cursor++;
+    if (len < 3) return;
+    int8_t beaconTxPower = (int8_t) body[0];
+    uint8_t senderSeq = body[1];
+    uint8_t count = body[2];
+    // Ramka obcieta albo przeklamana: liczba tras nie moze wykraczac poza tresc.
+    if ((uint16_t) 3 + (uint16_t) count * MESH_BEACON_ROUTE_LEN > len) return;
 
     // Tlumienie lacza do nadawcy: znamy moc nadania (z beaconu) i RSSI odbioru.
     // EMA 3/4 starej + 1/4 nowej probki - RSSI pojedynczej ramki skacze o kilka dB.
@@ -261,8 +255,8 @@ void MeshRouter::handleBeacon(const char *body, uint8_t radioSender) {
     uint8_t directCost = linkCost(*n);
     Route *r = findRoute(radioSender, true);
     if (r != nullptr) {
-        bool newer = (int8_t) ((uint8_t) senderSeq - r->seq) > 0;
-        bool older = (int8_t) ((uint8_t) senderSeq - r->seq) < 0;
+        bool newer = (int8_t) (uint8_t) (senderSeq - r->seq) > 0;
+        bool older = (int8_t) (uint8_t) (senderSeq - r->seq) < 0;
         if (newer || (!older && (r->metric >= MESH_METRIC_INFINITY
             || r->nextHop == radioSender
             || directCost + MESH_ROUTE_SWITCH_MARGIN < r->metric))) {
@@ -273,42 +267,40 @@ void MeshRouter::handleBeacon(const char *body, uint8_t radioSender) {
             }
             r->nextHop = radioSender;
             r->metric = directCost;
-            r->seq = (uint8_t) senderSeq;
+            r->seq = senderSeq;
         }
     }
 
     // Trasy ogloszone przez nadawce: DSDV - nowszy seq wygrywa zawsze, w ramach
     // tego samego seq obowiazuje histereza (ruch = wahania RSSI = ryzyko trzepotania).
-    while (*cursor != '\0') {
-        long dest = (long) strtoul(cursor, &cursor, 10);
-        if (*cursor != ':') break;
-        long metric = (long) strtoul(cursor + 1, &cursor, 10);
-        if (*cursor != ':') break;
-        long seq = (long) strtoul(cursor + 1, &cursor, 10);
-        if (*cursor == ',') cursor++;
+    const uint8_t *entry = body + 3;
+    for (uint8_t i = 0; i < count; i++, entry += MESH_BEACON_ROUTE_LEN) {
+        uint8_t dest = entry[0];
+        uint8_t metric = entry[1];
+        uint8_t seq = entry[2];
 
         if (dest == manager->nodeId) {
             // Odzysk ciaglosci seq po restarcie (DSDV): jesli siec pamieta nas z
             // wyzszym numerem, przeskakujemy go - inaczej nasze swieze beacony
             // bylyby "starsze" od widma sprzed restartu nawet przez kilka minut.
-            if ((int8_t) ((uint8_t) seq - ownSeq) > 0) ownSeq = (uint8_t) seq;
+            if ((int8_t) (uint8_t) (seq - ownSeq) > 0) ownSeq = seq;
             continue;
         }
-        if (dest == radioSender || dest <= 0 || dest > 250) continue;
+        if (dest == radioSender || dest == 0 || dest > 250) continue;
         uint16_t total = (uint16_t) directCost + (metric >= MESH_METRIC_INFINITY
                                                   ? MESH_METRIC_INFINITY : (uint16_t) metric);
         uint8_t candidate = total >= MESH_METRIC_INFINITY ? MESH_METRIC_INFINITY : (uint8_t) total;
-        Route *route = findRoute((uint8_t) dest, candidate < MESH_METRIC_INFINITY);
+        Route *route = findRoute(dest, candidate < MESH_METRIC_INFINITY);
         if (route == nullptr) continue;
-        bool newer = (int8_t) ((uint8_t) seq - route->seq) > 0;
-        bool older = (int8_t) ((uint8_t) seq - route->seq) < 0;
+        bool newer = (int8_t) (uint8_t) (seq - route->seq) > 0;
+        bool older = (int8_t) (uint8_t) (seq - route->seq) < 0;
         bool sameHop = route->nextHop == radioSender;
         if (newer || (!older && (sameHop || route->metric >= MESH_METRIC_INFINITY
             || candidate + MESH_ROUTE_SWITCH_MARGIN < route->metric))) {
             if (!sameHop && route->metric < MESH_METRIC_INFINITY
                 && candidate < MESH_METRIC_INFINITY) {
                 Serial.print(F("MESH | trasa do "));
-                Serial.print((int) dest);
+                Serial.print(dest);
                 Serial.print(F(": via "));
                 Serial.print(radioSender);
                 Serial.print(F(" (koszt "));
@@ -317,15 +309,28 @@ void MeshRouter::handleBeacon(const char *body, uint8_t radioSender) {
             }
             route->nextHop = radioSender;
             route->metric = candidate;
-            route->seq = (uint8_t) seq;
+            route->seq = seq;
         }
     }
 }
 
 // ==================== DANE ====================
 
-bool MeshRouter::send(uint8_t finalDest, const String &payload,
-                      void (*okCallback)(), void (*failCallback)(String &)) {
+// "[2][zrodlo][cel][TTL][id]" + tresc - wspolne dla wlasnych wysylek i forwardu.
+// Zwraca calkowita dlugosc zlozonej wiadomosci mesh.
+uint8_t MeshRouter::composeDataFrame(uint8_t *out, uint8_t origin, uint8_t finalDest, uint8_t ttl,
+                                     uint8_t flowId, const uint8_t *payload, uint8_t payloadLen) {
+    out[0] = MESH_MSG_DATA;
+    out[1] = origin;
+    out[2] = finalDest;
+    out[3] = ttl;
+    out[4] = flowId;
+    memcpy(out + MESH_DATA_HEADER, payload, payloadLen);
+    return (uint8_t) (MESH_DATA_HEADER + payloadLen);
+}
+
+bool MeshRouter::send(uint8_t finalDest, const uint8_t *payload, uint8_t len,
+                      void (*okCallback)(), RadioFailCallback failCallback) {
     // RadioManager ma JEDEN slot callbackow ACK - drugi skok z ACK w locie
     // nadpisalby callbacki (i kontekst ponowien) tego pierwszego. Odlozone
     // ponowienie tez trzyma slot.
@@ -336,24 +341,25 @@ bool MeshRouter::send(uint8_t finalDest, const String &payload,
         Serial.println(finalDest);
         return false;
     }
-    // Ramka skladana WPROST w buforze nadawczym radia. Wczesniej: lokalny String
-    // (~120 B) + kopia do bufora + kopia do payloadu ponowien = trzy zywe kopie tej
-    // samej tresci; przy 246 B wolnego RAM ta pierwsza alokacja padala w kazdej
-    // sekundzie ("brak RAM na ramke danych") i wezel nie nadawal wcale.
-    String *frame = manager->acquireTxBuffer();
-    if (frame == nullptr) return false;
-    if (!RadioManager::txBufferFits(payload.length() + MESH_DATA_HEADER_MAX)) {
-        manager->releaseTxBuffer();
-        Serial.println(F("MESH | payload za dlugi - nie wyslano"));
+    if (!RadioManager::txBufferFits((uint16_t) MESH_DATA_HEADER + len)) {
+        Serial.println(F("MESH | tresc za dluga - nie wyslano"));
         return false;
     }
-    composeDataFrame(*frame, manager->nodeId, finalDest, MESH_MAX_TTL, nextFlowId, payload.c_str());
+    // Ramka skladana WPROST w buforze nadawczym radia: zero alokacji i zero kopii
+    // ponad te jedna, ktora i tak trzeba zrobic.
+    uint8_t *frame = manager->acquireTxBuffer();
+    if (frame == nullptr) return false;
+    uint8_t total = composeDataFrame(frame, manager->nodeId, finalDest, MESH_MAX_TTL,
+                                     nextFlowId, payload, len);
     hopRetriesLeft = MESH_HOP_RETRIES;
     hopDest = nextHop;
     // ACK skok po skoku: "OK" u aplikacji = dotarlo do PIERWSZEGO posrednika.
     appOkCallback = okCallback;
     appFailCallback = failCallback;
-    if (!manager->commitTxBuffer(nextHop, true, sHopAckOk, sHopAckFail)) return false;
+    if (!manager->commitTxBuffer(total, nextHop, RADIO_TYPE_MESH, true,
+                                 sHopAckOk, sHopAckFail)) {
+        return false;
+    }
     // Dedup i zuzycie id dopiero po udanym zakolejkowaniu - nieudana proba nic
     // nie nadala, wiec to samo id moze legalnie sprobowac ponownie.
     isDuplicate(manager->nodeId, nextFlowId); // wlasna ramka do dedupu: echo ma zginac
@@ -362,44 +368,24 @@ bool MeshRouter::send(uint8_t finalDest, const String &payload,
     return true;
 }
 
-// "<MSH>D?<zrodlo>?<cel>?<ttl>?<id>?<tresc>" - wspolne dla wlasnych wysylek i forwardu.
-// Wolajacy gwarantuje pojemnosc (txBufferFits / reserve), wiec concat nie zawiedzie.
-void MeshRouter::composeDataFrame(String &out, uint8_t origin, uint8_t finalDest, uint8_t ttl,
-                                  uint8_t flowId, const char *payload) {
-    out = F("<MSH>D?");
-    out += origin;
-    out += '?';
-    out += finalDest;
-    out += '?';
-    out += ttl;
-    out += '?';
-    out += flowId;
-    out += '?';
-    out += payload;
-}
-
 void MeshRouter::sHopAckOk() {
     if (instance == nullptr) return;
     instance->hopRetriesLeft = 0;
     if (instance->appOkCallback) instance->appOkCallback();
 }
 
-void MeshRouter::sHopAckFail(String &taggedPayload) {
-    if (instance != nullptr) instance->hopAckFail(taggedPayload);
+void MeshRouter::sHopAckFail(const uint8_t *payload, uint8_t len) {
+    (void) payload;
+    (void) len;
+    if (instance != nullptr) instance->hopAckFail();
 }
 
 // ACK skoku nie doszedl. Ponawiamy ograniczona liczbe razy, a potem uniewazniamy
 // wszystkie trasy przez tego sasiada - wezly sa w ruchu, wiec brak ACK to zwykle
 // "odjechal", a nastepne beacony i tak przyniosa swieza topologie.
-void MeshRouter::hopAckFail(String &taggedPayload) {
+void MeshRouter::hopAckFail() {
     if (frozen) return; // OTA: transakcja sprzed zamrozenia wygasa bez ponowien i kar
-    if (taggedPayload.length() == 0) {
-        // Payload przepadl (cichy OOM Stringa) - nie ma czego ponawiac, a pusta
-        // ramka i tak zostalaby odrzucona przez sendDirectly.
-        giveUpHop();
-        return;
-    }
-    if (hopRetriesLeft > 0) {
+    if (hopRetriesLeft > 0 && manager->hasRetainedFrame()) {
         // NIGDY nie ponawiamy natychmiast. Timeout ACK jest deterministyczny (1 s od
         // nadania), wiec dwa wezly, ktorych ramki raz sie zderzyly, ponawialy je w tej
         // samej milisekundzie i zderzaly ponownie - az do wyczerpania prob, utraty tras
@@ -422,45 +408,40 @@ void MeshRouter::giveUpHop() {
     Serial.println(F(" nie potwierdza - uniewazniam trasy przez niego"));
     invalidateRoutesVia(hopDest);
     if (appFailCallback) {
-        appFailCallback(manager->retainedFrame()); // pusty, jesli bufor juz zajal ktos inny
+        appFailCallback(manager->retainedFrame(), manager->retainedLength());
         appFailCallback = nullptr;
     }
     appOkCallback = nullptr;
 }
 
-// str = payload po zdjeciu "<MSH>" (radio juz zdjelo naglowek ramki radiowej).
-void MeshRouter::radioMeshDataReceived(String &str, uint8_t radioSender) {
-    const char *body = str.c_str();
-    if (body == nullptr || body[0] == '\0') return;
-    if (body[0] == 'B' && body[1] == '?') {
-        handleBeacon(body + 2, radioSender);
-    } else if (body[0] == 'D' && body[1] == '?') {
-        handleData(str, body + 2, radioSender);
+// payload = tresc ramki radiowej typu MESH (radio zdjelo juz swoj naglowek).
+void MeshRouter::radioMeshDataReceived(uint8_t *payload, uint8_t len, uint8_t radioSender) {
+    if (len < 1) return;
+    if (payload[0] == MESH_MSG_BEACON) {
+        handleBeacon(payload + 1, (uint8_t) (len - 1), radioSender);
+    } else if (payload[0] == MESH_MSG_DATA) {
+        handleData(payload + 1, (uint8_t) (len - 1), radioSender);
     }
 }
 
-// body wskazuje za "D?": "<zrodlo>?<cel>?<ttl>?<id>?<tresc>"
-void MeshRouter::handleData(String &str, const char *body, uint8_t radioSender) {
+// body wskazuje ZA bajt rodzaju: [zrodlo][cel koncowy][TTL][id strumienia] + tresc
+void MeshRouter::handleData(uint8_t *body, uint8_t len, uint8_t radioSender) {
     (void) radioSender;
-    char *cursor;
-    long origin = (long) strtoul(body, &cursor, 10);
-    if (*cursor != '?') return;
-    long finalDest = (long) strtoul(cursor + 1, &cursor, 10);
-    if (*cursor != '?') return;
-    long ttl = (long) strtoul(cursor + 1, &cursor, 10);
-    if (*cursor != '?') return;
-    long flowId = (long) strtoul(cursor + 1, &cursor, 10);
-    if (*cursor != '?') return;
-    const char *payload = cursor + 1;
+    if (len < MESH_DATA_HEADER - 1) return;
+    uint8_t origin = body[0];
+    uint8_t finalDest = body[1];
+    uint8_t ttl = body[2];
+    uint8_t flowId = body[3];
+    uint8_t *payload = body + (MESH_DATA_HEADER - 1);
+    uint8_t payloadLen = (uint8_t) (len - (MESH_DATA_HEADER - 1));
 
-    if (origin <= 0 || origin > 250 || finalDest <= 0 || finalDest > 250) return;
-    if (isDuplicate((uint8_t) origin, (uint8_t) flowId)) return;
+    if (origin == 0 || origin > 250 || finalDest == 0 || finalDest > 250) return;
+    if (isDuplicate(origin, flowId)) return;
 
-    if ((uint8_t) finalDest == manager->nodeId) {
-        // Dostarczenie: naglowek mesh zdejmujemy remove() W MIEJSCU - substring
-        // tworzyl druga pelna kopie tresci obok kopii ramki z FIFO.
-        str.remove(0, (unsigned int) (payload - str.c_str()));
-        if (dataReceivedCallback) dataReceivedCallback(str, (uint8_t) origin);
+    if (finalDest == manager->nodeId) {
+        // Dostarczenie: tresc lezy w buforze odbiorczym radia, ktory jest zakonczony
+        // zerem - warstwa wyzej dostaje ja jako gotowy C-string, bez zadnej kopii.
+        if (dataReceivedCallback) dataReceivedCallback((const char *) payload, payloadLen, origin);
         return;
     }
     if (frozen) return;      // OTA: nie forwardujemy cudzych ramek
@@ -468,33 +449,34 @@ void MeshRouter::handleData(String &str, const char *body, uint8_t radioSender) 
         Serial.println(F("MESH | TTL wyczerpany - porzucam ramke"));
         return;
     }
-    forwardData((uint8_t) origin, (uint8_t) finalDest, (uint8_t) (ttl - 1),
-                (uint8_t) flowId, payload);
+    forwardData(origin, finalDest, (uint8_t) (ttl - 1), flowId, payload, payloadLen);
 }
 
 bool MeshRouter::forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl,
-                             uint8_t flowId, const char *payload) {
+                             uint8_t flowId, const uint8_t *payload, uint8_t payloadLen) {
     uint8_t nextHop = getNextHop(finalDest);
     if (nextHop == 0) {
         Serial.print(F("MESH | forward: brak trasy do "));
         Serial.println(finalDest);
         return false;
     }
-    unsigned int frameLen = strlen(payload) + MESH_DATA_HEADER_MAX;
+    uint16_t frameLen = (uint16_t) MESH_DATA_HEADER + payloadLen;
     if (!RadioManager::txBufferFits(frameLen)) {
-        Serial.println(F("MESH | forward: payload za dlugi - porzucam"));
+        Serial.println(F("MESH | forward: tresc za dluga - porzucam"));
         return false;
     }
     if (!manager->waitingForAck && !hopRetryPending) {
         // Slot wolny: ramka skladana wprost w buforze nadawczym radia (bez kopii).
-        String *frame = manager->acquireTxBuffer();
+        uint8_t *frame = manager->acquireTxBuffer();
         if (frame != nullptr) {
-            composeDataFrame(*frame, origin, finalDest, ttl, flowId, payload);
+            uint8_t total = composeDataFrame(frame, origin, finalDest, ttl, flowId,
+                                             payload, payloadLen);
             hopRetriesLeft = MESH_HOP_RETRIES;
             hopDest = nextHop;
             appOkCallback = nullptr;   // forward nie jest nasza aplikacyjna wysylka
             appFailCallback = nullptr;
-            if (manager->commitTxBuffer(nextHop, true, sHopAckOk, sHopAckFail)) {
+            if (manager->commitTxBuffer(total, nextHop, RADIO_TYPE_MESH, true,
+                                        sHopAckOk, sHopAckFail)) {
                 Serial.print(F("MESH | forward "));
                 Serial.print(origin);
                 Serial.print(F("->"));
@@ -508,18 +490,13 @@ bool MeshRouter::forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl,
     // Slot transakcji zajety. Ramki NIE wolno porzucic: poprzedni skok juz dostal
     // jej radiowe ACK, wiec zadne ponowienie z tamtej strony nie nadejdzie.
     // Odkladamy ja do jednego gniazda i wysylamy z loop(), gdy slot sie zwolni.
-    // To jedyna alokacja na sciezce forwardu; String zostaje na stercie w rozmiarze
-    // najwiekszej odlozonej ramki - reserve() wykryje brak RAM, zanim cos zapiszemy.
-    if (pendingForwardFrame.length() == 0) {
-        if (pendingForwardFrame.reserve(frameLen)) {
-            composeDataFrame(pendingForwardFrame, origin, finalDest, ttl, flowId, payload);
-            pendingForwardHop = nextHop;
-            pendingForwardDeadline = millis() + 2500;
-            Serial.println(F("MESH | forward odlozony (slot transakcji zajety)"));
-            return true;
-        }
-        Serial.println(F("MESH | brak RAM na odlozony forward - porzucam"));
-        return false;
+    if (pendingForwardLen == 0) {
+        pendingForwardLen = composeDataFrame(pendingForward, origin, finalDest, ttl, flowId,
+                                             payload, payloadLen);
+        pendingForwardHop = nextHop;
+        pendingForwardDeadline = millis() + 2500;
+        Serial.println(F("MESH | forward odlozony (slot transakcji zajety)"));
+        return true;
     }
     Serial.println(F("MESH | forward porzucony - gniazdo odlozen zajete"));
     return false;
@@ -541,7 +518,7 @@ void MeshRouter::printState() {
     }
     Serial.print(F("seq=")); Serial.print(ownSeq);
     Serial.print(F(" retry=")); Serial.print(hopRetryPending);
-    Serial.print(F(" fwd=")); Serial.print(pendingForwardFrame.length());
+    Serial.print(F(" fwd=")); Serial.print(pendingForwardLen);
     Serial.print(F(" frozen=")); Serial.println(frozen);
 }
 

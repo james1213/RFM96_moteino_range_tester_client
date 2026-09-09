@@ -65,6 +65,9 @@
 // Najdluzsza linia "FLX?HEX?<numer>?<base64>?<crc32>", jaka moze przyjsc z PC:
 // 8 znakow prefiksu + do 5 cyfr numeru pakietu + '?' + base64 + '?' + do 10 cyfr CRC32.
 // Podloga 64 zostawia zapas na krotkie komendy konfiguracyjne (PROGRAMMERID: itp.).
+// Dlugosc prefiksu ramki z danymi HEX w eterze: "FLX?DAT?"
+#define OTA_DAT_PREFIX_LEN 8
+
 #define OTA_BASE64_LENGTH(dataBytes) (((dataBytes) + 2) / 3 * 4)
 #define OTA_SERIAL_LINE_NEEDED (8 + 5 + 1 + OTA_BASE64_LENGTH(OTA_PACKET_SIZE_BYTES) + 1 + 10)
 #define OTA_SERIAL_LINE_MAX ((OTA_SERIAL_LINE_NEEDED) > 64 ? (OTA_SERIAL_LINE_NEEDED) : 64)
@@ -154,7 +157,7 @@ private:
     // Usunieta: ~106 B sterty w najciasniejszym momencie wysylki.
     long currentHexPacketNumber = -1; // numer pakietu z ostatniej ramki FLX?DAT? wyslanej w eter
 
-    bool isResponseForCurrentHexPacket(const String &str, uint8_t prefixLength);
+    bool isResponseForCurrentHexPacket(const char *str, uint8_t prefixLength);
     void noteStaleHexResponse();
 
     uint8_t readSerialLine(char* input, char endOfLineChar=10, uint8_t maxLength=OTA_SERIAL_LINE_MAX, uint16_t timeout=1000);
@@ -182,14 +185,12 @@ public:
 //    void radioSendHex();
     bool radioSendHandshake();
     bool radioSendEof();
-    void radioOtaDataReceived(String &str, uint8_t senderId);
+    void radioOtaDataReceived(char *str, uint8_t len, uint8_t senderId);
 
     ///////////////////////////////////////////////
 
     void serialSendHandshakeResponse(uint8_t *input, uint8_t inputLen, uint16_t targetID, uint16_t timeout, uint16_t ackTimeout,
                                      uint8_t debug);
-
-    bool isHexEofMessage(String &str);
 
     bool radioSendHexFromSerial();
 };

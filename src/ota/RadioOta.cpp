@@ -171,30 +171,33 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
 
 bool RadioOta::radioSendHexFromSerial() {
     // Ramka skladana WPROST w buforze nadawczym radia: zero alokacji. To najwiekszy
-    // pojedynczy pakiet danych w calym systemie (do 118 B), a na 2 KB RAM kazda
-    // kopia Stringa po drodze decydowala o powodzeniu wysylki.
+    // pojedynczy pakiet danych w calym systemie, a naglowek radiowy to teraz 4 bajty
+    // zamiast dwudziestu znakow tekstu - tyle wiecej miejsca na same dane.
     const char *hexLine = _input + 8; // "<numer>?<base64>?<crc>" prosto z bufora serialowego
-    String *frame = manager->acquireTxBuffer();
-    if (frame == nullptr) return false; // radio zajete - ponow w nastepnym obiegu
-    if (!RadioManager::txBufferFits(strlen(hexLine) + 13)) {
-        manager->releaseTxBuffer();
+    size_t lineLen = strlen(hexLine);
+    if (!RadioManager::txBufferFits(OTA_DAT_PREFIX_LEN + lineLen)) {
         Serial.println(F("OTA | ERROR: linia HEX za dluga na ramke radiowa - nie wyslano"));
         return false;
     }
-    *frame = F("<OTA>FLX?DAT?");
-    *frame += hexLine;
-    if (DEBUG) { Serial.print(F("OTA | radioSendHexFromSerial(), data = ")); Serial.println(*frame); }
-    return manager->commitTxBuffer(targetID, false);
+    uint8_t *frame = manager->acquireTxBuffer();
+    if (frame == nullptr) return false; // radio zajete - ponow w nastepnym obiegu
+    memcpy_P(frame, PSTR("FLX?DAT?"), OTA_DAT_PREFIX_LEN);
+    memcpy(frame + OTA_DAT_PREFIX_LEN, hexLine, lineLen);
+    if (DEBUG) { Serial.print(F("OTA | radioSendHexFromSerial(), data = ")); Serial.println(hexLine); }
+    return manager->commitTxBuffer((uint8_t) (OTA_DAT_PREFIX_LEN + lineLen), targetID,
+                                   RADIO_TYPE_OTA, false);
 }
 
 bool RadioOta::radioSendHandshake() {
-    String handshakeStr = "FLX?";
-    return manager->sendOta(handshakeStr, targetID);
+    return manager->sendOta("FLX?", targetID);
 }
 
 bool RadioOta::radioSendEof() {
-    String handshakeStr = "FLX?EOF?" + String(finalCrc32);
-    return manager->sendOta(handshakeStr, targetID);
+    // "FLX?EOF?" + do 10 cyfr CRC32 + zero konczace
+    char line[20];
+    memcpy_P(line, PSTR("FLX?EOF?"), 8);
+    ultoa(finalCrc32, line + 8, 10);
+    return manager->sendOta(line, targetID);
 }
 
 RadioOta::RadioOta(RadioManager *manager) {
@@ -210,11 +213,11 @@ bool RadioOta::isOtaInProgress() {
 // spozniona retransmisja odpowiedzi na pakiet n nie zostanie zaliczona jako odpowiedz
 // na pakiet n+1 (co konczylo sie rozjazdem numeracji i cofka przez FLX?HEX?WRONG_NUM).
 // Odpowiedz bez numeru = starszy firmware odbiornika -> akceptujemy ja jak dawniej.
-bool RadioOta::isResponseForCurrentHexPacket(const String &str, uint8_t prefixLength) {
-    if (str.length() <= prefixLength || str.charAt(prefixLength) != '?') {
+bool RadioOta::isResponseForCurrentHexPacket(const char *str, uint8_t prefixLength) {
+    if (strlen(str) <= prefixLength || str[prefixLength] != '?') {
         return true;
     }
-    long responseNumber = atol(str.c_str() + prefixLength + 1); // bez substring - zero alokacji
+    long responseNumber = atol(str + prefixLength + 1);
     if (responseNumber == currentHexPacketNumber) {
         return true;
     }
@@ -235,7 +238,8 @@ void RadioOta::noteStaleHexResponse() {
     hexSendTryes = 0;
 }
 
-void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
+void RadioOta::radioOtaDataReceived(char *str, uint8_t len, uint8_t senderId) {
+    (void) len;
     if (DEBUG) Serial.print(F("OTA | radioOtaDataReceived: \""));
     if (DEBUG) Serial.print(str);
     if (DEBUG) Serial.print(F("\" from senderId: "));
@@ -243,7 +247,7 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
 
     // Wzorce w PROGMEM: szesc Stringow tymczasowych na kazda odebrana ramke OTA to
     // szesc malloc/free w najciasniejszym momencie transferu - i fragmentacja sterty.
-    const char *s = str.c_str();
+    const char *s = str;
     const uint8_t hexOkLen = 10;  // strlen("FLX?HEX?OK")
     const uint8_t hexErrLen = 11; // strlen("FLX?HEX?ERR")
 
