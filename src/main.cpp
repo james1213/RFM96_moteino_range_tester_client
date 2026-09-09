@@ -98,6 +98,9 @@ void displayCountAndRssi(const String &str);
 void dataReceived(String &str, uint8_t senderId);
 
 void setup() {
+    // Pierwsza instrukcja: wolny obszar miedzy sterta a stosem dostaje wzor, z ktorego
+    // DIAG (stk=) odczytuje pozniej najmniejszy zapas stosu, jaki kiedykolwiek wystapil.
+    RadioManager::paintFreeStack();
     setupSerial();
     Serial.println(F("ver. 1.1"));
     printResetCause();

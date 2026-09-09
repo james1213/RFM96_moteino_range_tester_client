@@ -42,10 +42,21 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
         otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
         Serial.println(F("OTA | going to WAITING_FOR_HEX_DATA_FROM_SERIAL state"));
     } else if (otaState == OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL)) {
-        if (millis() - hexDataFromSerialStartTime > 1000) {
-            Serial.println(F("FLX?HEX?SERIAL_TIMEOUT"));
-            resetStateAndValues();
-            Serial.println(F("OTA | Hex from serial not received, timeout reached. Not waiting anymore"));
+        if (millis() - hexDataFromSerialStartTime > OTA_SERIAL_WAIT_MS) {
+            if (serialResendRequests < OTA_SERIAL_RESEND_LIMIT) {
+                // Zgubiona linia z PC (albo zgubione nasze "FLX?HEX?OK"): prosba o ponowienie
+                // biezacego pakietu ta sama komenda, ktorej uzywa target przy zlym numerze.
+                // Spozniona linia, ktora jednak dojdzie, jest po prostu obsluzona; duplikat
+                // z ponowienia trafi w stan SENDING/WAITING i zostanie zignorowany.
+                serialResendRequests++;
+                Serial.print(F("FLX?HEX?WRONG_NUM?"));
+                Serial.println(currentHexPacketNumber + 1);
+                hexDataFromSerialStartTime = millis();
+            } else {
+                Serial.println(F("FLX?HEX?SERIAL_TIMEOUT"));
+                resetStateAndValues();
+                Serial.println(F("OTA | Hex from serial not received, timeout reached. Not waiting anymore"));
+            }
         }
     } else if (otaState == OtaState(SENDING_WIRELESS_HEX)) {
         if (hexSendTryes >= HEX_SENDING_TRYES_LIMIT) {
@@ -126,6 +137,7 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                     // zbudowania ramki przy 64-bajtowych pakietach.
                     // format z Javy: "<numer>?<base64>?<crc>"
                     currentHexPacketNumber = atol(_input + 8);
+                    serialResendRequests = 0; // linia doszla - licznik prosb od nowa
                     if (DEBUG) { Serial.print(F("OTA | hex line = ")); Serial.println(_input + 8); }
                     otaState = OtaState(SENDING_WIRELESS_HEX);
                 }
@@ -136,7 +148,8 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                     // ("result value is not predictable"). W praktyce atol zawija mod 2^32,
                     // wiec rzutowanie na uint32_t dawalo dobra wartosc - ale strtoul jest
                     // zdefiniowane dla calego zakresu, wiec nie polegamy na przypadku.
-                    finalCrc32 = strtoul(String(_input).substring(8).c_str(), nullptr, 10);
+                    finalCrc32 = strtoul(_input + 8, nullptr, 10); // bez String/substring - zero alokacji
+                    serialResendRequests = 0;
                     otaState = OtaState(SENDING_WIRELESS_EOF);
                 }
 //            } else if (strstr(_input, "TO:") == _input && strlen(colon + 1) > 0) {
@@ -157,19 +170,21 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
 }
 
 bool RadioOta::radioSendHexFromSerial() {
-    // "<OTA>" doklejamy od razu i wysylamy przez sendTagged, zeby nie powstala druga
-    // pelna kopia payloadu w sendOta. To najwiekszy pojedynczy pakiet danych w calym
-    // systemie, a na 2 KB RAM lancuch kopii Stringow decydowal o powodzeniu wysylki.
+    // Ramka skladana WPROST w buforze nadawczym radia: zero alokacji. To najwiekszy
+    // pojedynczy pakiet danych w calym systemie (do 118 B), a na 2 KB RAM kazda
+    // kopia Stringa po drodze decydowala o powodzeniu wysylki.
     const char *hexLine = _input + 8; // "<numer>?<base64>?<crc>" prosto z bufora serialowego
-    String dataToSend;
-    if (!dataToSend.reserve(strlen(hexLine) + 24)) {
-        Serial.println(F("OTA | ERROR: brak RAM na ramke HEX - nie wyslano"));
+    String *frame = manager->acquireTxBuffer();
+    if (frame == nullptr) return false; // radio zajete - ponow w nastepnym obiegu
+    if (!RadioManager::txBufferFits(strlen(hexLine) + 13)) {
+        manager->releaseTxBuffer();
+        Serial.println(F("OTA | ERROR: linia HEX za dluga na ramke radiowa - nie wyslano"));
         return false;
     }
-    dataToSend = F("<OTA>FLX?DAT?");
-    dataToSend += hexLine;
-    if (DEBUG) { Serial.print(F("OTA | radioSendHexFromSerial(), data = ")); Serial.println(dataToSend); }
-    return manager->sendTagged(dataToSend, targetID);
+    *frame = F("<OTA>FLX?DAT?");
+    *frame += hexLine;
+    if (DEBUG) { Serial.print(F("OTA | radioSendHexFromSerial(), data = ")); Serial.println(*frame); }
+    return manager->commitTxBuffer(targetID, false);
 }
 
 bool RadioOta::radioSendHandshake() {
@@ -199,7 +214,7 @@ bool RadioOta::isResponseForCurrentHexPacket(const String &str, uint8_t prefixLe
     if (str.length() <= prefixLength || str.charAt(prefixLength) != '?') {
         return true;
     }
-    long responseNumber = str.substring(prefixLength + 1).toInt();
+    long responseNumber = atol(str.c_str() + prefixLength + 1); // bez substring - zero alokacji
     if (responseNumber == currentHexPacketNumber) {
         return true;
     }
@@ -226,26 +241,25 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
     if (DEBUG) Serial.print(F("\" from senderId: "));
     if (DEBUG) Serial.println(senderId);
 
-    String handshakeResponse = "FLX?OK";
-    String hexOkResponse = "FLX?HEX?OK";
-    String hexErrResponse = "FLX?HEX?ERR";
-    String hexWrongNumResponse = "FLX?HEX?WRONG_NUM";
-    String eofOkResponse = "FLX?EOF?OK";
-    String eofErrResponse = "FLX?EOF?ERR";
+    // Wzorce w PROGMEM: szesc Stringow tymczasowych na kazda odebrana ramke OTA to
+    // szesc malloc/free w najciasniejszym momencie transferu - i fragmentacja sterty.
+    const char *s = str.c_str();
+    const uint8_t hexOkLen = 10;  // strlen("FLX?HEX?OK")
+    const uint8_t hexErrLen = 11; // strlen("FLX?HEX?ERR")
 
     // Odpowiedzi akceptujemy takze w stanach SENDING_* (tuz po timeoucie okna):
     // spozniona odpowiedz jest nadal wazna, a odbiornik dostal juz radiowy auto-ACK
     // i przeszedl dalej - odrzucenie jej tutaj rozsynchronizowaloby oba wezly.
-    if (str.equals(handshakeResponse)) {
+    if (strcmp_P(s, PSTR("FLX?OK")) == 0) {
         if (otaState == OtaState(WAITING_FOR_WIRELESS_HANDSHAKE_RESPONSE)
             || otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
             otaState = OtaState(WIRELESS_HANDSHAKE_RESPONSE_RECEIVED);
             Serial.println(F("OTA | Handshake response received"));
         }
-    } else if (str.startsWith(hexOkResponse)) {
+    } else if (strncmp_P(s, PSTR("FLX?HEX?OK"), hexOkLen) == 0) {
         if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
             || otaState == OtaState(SENDING_WIRELESS_HEX)) {
-            if (isResponseForCurrentHexPacket(str, hexOkResponse.length())) {
+            if (isResponseForCurrentHexPacket(str, hexOkLen)) {
                 hexSendTryes = 0;
                 Serial.println(F("FLX?HEX?OK")); // do Javy zawsze bez numeru - format serialu bez zmian
                 hexDataFromSerialStartTime = millis();
@@ -255,7 +269,7 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
                 noteStaleHexResponse();
             }
         }
-    } else if (str.equals(eofOkResponse)) {
+    } else if (strcmp_P(s, PSTR("FLX?EOF?OK")) == 0) {
         if (otaState == OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE)
             || otaState == OtaState(SENDING_WIRELESS_EOF)) {
             Serial.println(F("FLX?EOF?OK"));
@@ -263,10 +277,10 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
             resetStateAndValues();
             Serial.println(F("OTA | EOF response received"));
         }
-    } else if (str.startsWith(hexErrResponse)) {
+    } else if (strncmp_P(s, PSTR("FLX?HEX?ERR"), hexErrLen) == 0) {
         if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
             || otaState == OtaState(SENDING_WIRELESS_HEX)) {
-            if (isResponseForCurrentHexPacket(str, hexErrResponse.length())) {
+            if (isResponseForCurrentHexPacket(str, hexErrLen)) {
                 hexSendTryes = 0;
                 Serial.println(F("FLX?HEX?ERR")); // do Javy zawsze bez numeru - format serialu bez zmian
                 hexDataFromSerialStartTime = millis();
@@ -280,7 +294,7 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
     // a nie ten, ktory wlasnie wyslalismy. Duplikat zawsze niesie te sama wartosc
     // (oczekiwanie nie ruszy, dopoki pakiet nie zostanie zapisany), wiec co najwyzej
     // powtarza Javie te sama komende cofki - jest samonaprawialny.
-    } else if (str.startsWith(hexWrongNumResponse)) {
+    } else if (strncmp_P(s, PSTR("FLX?HEX?WRONG_NUM"), 17) == 0) {
         if (otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE)
             || otaState == OtaState(SENDING_WIRELESS_HEX)) {
             hexSendTryes = 0;
@@ -290,7 +304,7 @@ void RadioOta::radioOtaDataReceived(String &str, uint8_t senderId) {
             otaState = OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL);
             Serial.println(F("OTA | HEX response received, but it has wrong number"));
         }
-    } else if (str.equals(eofErrResponse)) {
+    } else if (strcmp_P(s, PSTR("FLX?EOF?ERR")) == 0) {
         if (otaState == OtaState(WAITING_FOR_WIRELESS_EOF_RESPONSE)
             || otaState == OtaState(SENDING_WIRELESS_EOF)) {
             Serial.println(F("FLX?EOF?ERR"));
@@ -338,6 +352,7 @@ void RadioOta::resetStateAndValues() {
     handshakeTryes = 0;
     hexSendTryes = 0;
     eofSendTryes = 0;
+    serialResendRequests = 0;
     currentHexPacketNumber = -1;
     otaState = OtaState(WAITING_FOR_SERIAL_HANDSHAKE);
 }

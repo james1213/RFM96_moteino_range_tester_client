@@ -88,17 +88,33 @@ private:
 
     unsigned long handshakeSendStartTime = 0;
     uint8_t handshakeTryes = 0;
-    const uint8_t HANDSHAKE_SENDING_TRYES_LIMIT = 3;
+    const uint8_t HANDSHAKE_SENDING_TRYES_LIMIT = 5;
 
     unsigned long hexSendStartTime = 0;
     uint8_t hexSendTryes = 0;
-    const uint8_t HEX_SENDING_TRYES_LIMIT = 3;
+    // Kazda proba to ~1,1 s okna na odpowiedz. Przy trzech probach transfer 465
+    // pakietow padal niemal na pewno, gdy w eterze byl TRZECI wezel: nie bierze on
+    // udzialu w OTA, wiec dalej nadaje ruch testowy co sekunde i ~20-30% ramek OTA
+    // zderza sie z nim; 0,25^3 na pakiet razy 465 pakietow = zerwany transfer.
+    // Osiem prob: 0,25^8 ~ 1,5e-5 na pakiet. Odbiornik czeka na kolejny pakiet
+    // 15 s (RECEIVING_HEX), co pokrywa cale okno ponowien.
+    const uint8_t HEX_SENDING_TRYES_LIMIT = 8;
 
     unsigned long eofSendStartTime = 0;
     uint8_t eofSendTryes = 0;
-    const uint8_t EOF_SENDING_TRYES_LIMIT = 3;
+    const uint8_t EOF_SENDING_TRYES_LIMIT = 6;
 
     unsigned long hexDataFromSerialStartTime = 0;
+    // Linia HEX/EOF z PC nie doszla w tym czasie (albo to nasza odpowiedz nie doszla
+    // do PC): prosimy o ponowienie biezacego pakietu komenda FLX?HEX?WRONG_NUM?<numer>,
+    // ktora Java juz obsluguje (cofa dataIndex; numer == liczba pakietow -> ponawia EOF).
+    // Sciezka serialowa bywa bezprzewodowa (mostek ESP32 + para com0com) i potrafi
+    // zgubic linie albo zamilknac na sekundy - jedna zgubiona linia zrywala caly
+    // transfer po 78% (widziane na sprzecie: FLX?HEX?SERIAL_TIMEOUT przy 350/447).
+    // Java liczy ponowienia bez OK miedzy nimi (limit tam: HEX_SEND_TRIES_LIMIT).
+    static const uint16_t OTA_SERIAL_WAIT_MS = 3000;
+    static const uint8_t OTA_SERIAL_RESEND_LIMIT = 4;
+    uint8_t serialResendRequests = 0;
 
     uint32_t finalCrc32 = 0x4A17B156; // TODO obliczać ją rzeczywistą na podstawie odczytu z flasha
 

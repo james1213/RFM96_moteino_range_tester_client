@@ -53,6 +53,7 @@
                                      // przy kilku wpisach/s na ruchliwym relayu
 #define MESH_MAX_TTL              4     // max skokow; dobija ramki, ktore ucieka dedupowi
 #define MESH_HOP_RETRIES          2     // ponowienia jednego skoku (po ACK-timeoucie radia)
+#define MESH_DATA_HEADER_MAX      24    // "<MSH>D?255?255?255?255?" = 23 znaki
 #define MESH_METRIC_INFINITY      255
 #define MESH_ROUTE_SWITCH_MARGIN  2     // histereza: nowa trasa musi byc lepsza o tyle
 #define MESH_LINK_GOOD_PATHLOSS   70    // dB; do tego tlumienia lacze kosztuje bazowe 4
@@ -125,6 +126,8 @@ private:
     void giveUpHop();
 
     bool sendBeacon();
+    static void composeDataFrame(String &out, uint8_t origin, uint8_t finalDest, uint8_t ttl,
+                                 uint8_t flowId, const char *payload);
     void handleBeacon(const char *body, uint8_t radioSender);
     void handleData(String &str, const char *body, uint8_t radioSender);
     bool forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl, uint8_t flowId,

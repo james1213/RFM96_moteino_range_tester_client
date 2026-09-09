@@ -29,14 +29,13 @@ void MeshRouter::loop() {
     ageTables();
 
     // Odlozone ponowienie skoku (timeout ACK trafil w zajete radio): ma
-    // pierwszenstwo - trzyma slot transakcji, payload przetrwal w ackCallback_paylod.
+    // pierwszenstwo - trzyma slot transakcji, a payload wciaz lezy w buforze
+    // nadawczym radia (resendRetained ponawia go bez zadnej kopii).
     if (hopRetryPending && millis() >= hopRetryAtMillis && !manager->waitingForAck) {
-        if (millis() > hopRetryDeadlineMillis
-            || manager->ackCallback_paylod.length() == 0) {
+        if (millis() > hopRetryDeadlineMillis || !manager->hasRetainedFrame()) {
             hopRetryPending = false;
             giveUpHop();
-        } else if (manager->sendTagged(manager->ackCallback_paylod, hopDest,
-                                       sHopAckOk, sHopAckFail)) {
+        } else if (manager->resendRetained(hopDest, sHopAckOk, sHopAckFail)) {
             hopRetryPending = false;
             if (hopRetriesLeft > 0) hopRetriesLeft--; // proba zuzyta: poszla w eter
         } else {
@@ -206,29 +205,28 @@ bool MeshRouter::sendBeacon() {
     // Moc wpisana ponizej w tresc czyni pomiar tlumienia poprawnym przy kazdej mocy.
     int8_t beaconPower = (seqToSend & 1) ? manager->getEffectiveTxPower()
                                          : manager->apcMaxDbm;
-    String beacon;
-    if (!beacon.reserve(24 + MESH_MAX_ROUTES * 12)) {
-        Serial.println(F("MESH | brak RAM na beacon - pomijam"));
-        return false;
-    }
-    beacon = F("<MSH>B?");
-    beacon += (int) beaconPower; // moc, z jaka beacon FAKTYCZNIE poleci
-    beacon += '?';
-    beacon += seqToSend;
-    beacon += '?';
+    // Beacon skladany wprost w buforze nadawczym radia (stala pojemnosc, zero alokacji).
+    // Maksimum: 7 + 3 + 1 + 3 + 1 + MESH_MAX_ROUTES * 12 = 87 znakow < pojemnosc.
+    String *beacon = manager->acquireTxBuffer();
+    if (beacon == nullptr) return false;
+    *beacon = F("<MSH>B?");
+    *beacon += (int) beaconPower; // moc, z jaka beacon FAKTYCZNIE poleci
+    *beacon += '?';
+    *beacon += seqToSend;
+    *beacon += '?';
     bool first = true;
     for (auto &r : routes) {
         if (r.dest == 0) continue;
-        if (!first) beacon += ',';
+        if (!first) *beacon += ',';
         first = false;
-        beacon += r.dest;
-        beacon += ':';
-        beacon += r.metric;
-        beacon += ':';
-        beacon += r.seq;
+        *beacon += r.dest;
+        *beacon += ':';
+        *beacon += r.metric;
+        *beacon += ':';
+        *beacon += r.seq;
     }
     // Broadcast bez ACK, moc przemienna - patrz komentarz wyzej.
-    bool queued = manager->sendTaggedAtPower(beacon, RADIO_BROADCAST_ID, beaconPower);
+    bool queued = manager->commitTxBuffer(RADIO_BROADCAST_ID, false, nullptr, nullptr, beaconPower);
     if (queued) ownSeq = seqToSend; // seq rosnie tylko dla beaconow, ktore poszly
     return queued;
 }
@@ -338,33 +336,46 @@ bool MeshRouter::send(uint8_t finalDest, const String &payload,
         Serial.println(finalDest);
         return false;
     }
-    String frame;
-    if (!frame.reserve(payload.length() + 20)) {
-        Serial.println(F("MESH | brak RAM na ramke danych - nie wyslano"));
+    // Ramka skladana WPROST w buforze nadawczym radia. Wczesniej: lokalny String
+    // (~120 B) + kopia do bufora + kopia do payloadu ponowien = trzy zywe kopie tej
+    // samej tresci; przy 246 B wolnego RAM ta pierwsza alokacja padala w kazdej
+    // sekundzie ("brak RAM na ramke danych") i wezel nie nadawal wcale.
+    String *frame = manager->acquireTxBuffer();
+    if (frame == nullptr) return false;
+    if (!RadioManager::txBufferFits(payload.length() + MESH_DATA_HEADER_MAX)) {
+        manager->releaseTxBuffer();
+        Serial.println(F("MESH | payload za dlugi - nie wyslano"));
         return false;
     }
-    frame = F("<MSH>D?");
-    frame += manager->nodeId;
-    frame += '?';
-    frame += finalDest;
-    frame += '?';
-    frame += MESH_MAX_TTL;
-    frame += '?';
-    frame += nextFlowId;
-    frame += '?';
-    frame += payload;
+    composeDataFrame(*frame, manager->nodeId, finalDest, MESH_MAX_TTL, nextFlowId, payload.c_str());
     hopRetriesLeft = MESH_HOP_RETRIES;
     hopDest = nextHop;
     // ACK skok po skoku: "OK" u aplikacji = dotarlo do PIERWSZEGO posrednika.
     appOkCallback = okCallback;
     appFailCallback = failCallback;
-    if (!manager->sendTagged(frame, nextHop, sHopAckOk, sHopAckFail)) return false;
+    if (!manager->commitTxBuffer(nextHop, true, sHopAckOk, sHopAckFail)) return false;
     // Dedup i zuzycie id dopiero po udanym zakolejkowaniu - nieudana proba nic
     // nie nadala, wiec to samo id moze legalnie sprobowac ponownie.
     isDuplicate(manager->nodeId, nextFlowId); // wlasna ramka do dedupu: echo ma zginac
     nextFlowId++;
     if (nextFlowId == 0) nextFlowId = 1;
     return true;
+}
+
+// "<MSH>D?<zrodlo>?<cel>?<ttl>?<id>?<tresc>" - wspolne dla wlasnych wysylek i forwardu.
+// Wolajacy gwarantuje pojemnosc (txBufferFits / reserve), wiec concat nie zawiedzie.
+void MeshRouter::composeDataFrame(String &out, uint8_t origin, uint8_t finalDest, uint8_t ttl,
+                                  uint8_t flowId, const char *payload) {
+    out = F("<MSH>D?");
+    out += origin;
+    out += '?';
+    out += finalDest;
+    out += '?';
+    out += ttl;
+    out += '?';
+    out += flowId;
+    out += '?';
+    out += payload;
 }
 
 void MeshRouter::sHopAckOk() {
@@ -411,7 +422,7 @@ void MeshRouter::giveUpHop() {
     Serial.println(F(" nie potwierdza - uniewazniam trasy przez niego"));
     invalidateRoutesVia(hopDest);
     if (appFailCallback) {
-        appFailCallback(manager->ackCallback_paylod);
+        appFailCallback(manager->retainedFrame()); // pusty, jesli bufor juz zajal ktos inny
         appFailCallback = nullptr;
     }
     appOkCallback = nullptr;
@@ -446,9 +457,10 @@ void MeshRouter::handleData(String &str, const char *body, uint8_t radioSender) 
     if (isDuplicate((uint8_t) origin, (uint8_t) flowId)) return;
 
     if ((uint8_t) finalDest == manager->nodeId) {
-        // Dostarczenie: tresc wycinamy z ORYGINALNEGO Stringa (bez drugiej kopii).
-        String delivered = str.substring(payload - str.c_str());
-        if (dataReceivedCallback) dataReceivedCallback(delivered, (uint8_t) origin);
+        // Dostarczenie: naglowek mesh zdejmujemy remove() W MIEJSCU - substring
+        // tworzyl druga pelna kopie tresci obok kopii ramki z FIFO.
+        str.remove(0, (unsigned int) (payload - str.c_str()));
+        if (dataReceivedCallback) dataReceivedCallback(str, (uint8_t) origin);
         return;
     }
     if (frozen) return;      // OTA: nie forwardujemy cudzych ramek
@@ -468,48 +480,46 @@ bool MeshRouter::forwardData(uint8_t origin, uint8_t finalDest, uint8_t ttl,
         Serial.println(finalDest);
         return false;
     }
-    String frame;
-    if (!frame.reserve(strlen(payload) + 20)) {
-        Serial.println(F("MESH | brak RAM na forward - porzucam"));
+    unsigned int frameLen = strlen(payload) + MESH_DATA_HEADER_MAX;
+    if (!RadioManager::txBufferFits(frameLen)) {
+        Serial.println(F("MESH | forward: payload za dlugi - porzucam"));
         return false;
     }
-    frame = F("<MSH>D?");
-    frame += origin;
-    frame += '?';
-    frame += finalDest;
-    frame += '?';
-    frame += ttl;
-    frame += '?';
-    frame += flowId;
-    frame += '?';
-    frame += payload;
     if (!manager->waitingForAck && !hopRetryPending) {
-        hopRetriesLeft = MESH_HOP_RETRIES;
-        hopDest = nextHop;
-        appOkCallback = nullptr;   // forward nie jest nasza aplikacyjna wysylka
-        appFailCallback = nullptr;
-        if (manager->sendTagged(frame, nextHop, sHopAckOk, sHopAckFail)) {
-            Serial.print(F("MESH | forward "));
-            Serial.print(origin);
-            Serial.print(F("->"));
-            Serial.print(finalDest);
-            Serial.print(F(" via "));
-            Serial.println(nextHop);
-            return true;
+        // Slot wolny: ramka skladana wprost w buforze nadawczym radia (bez kopii).
+        String *frame = manager->acquireTxBuffer();
+        if (frame != nullptr) {
+            composeDataFrame(*frame, origin, finalDest, ttl, flowId, payload);
+            hopRetriesLeft = MESH_HOP_RETRIES;
+            hopDest = nextHop;
+            appOkCallback = nullptr;   // forward nie jest nasza aplikacyjna wysylka
+            appFailCallback = nullptr;
+            if (manager->commitTxBuffer(nextHop, true, sHopAckOk, sHopAckFail)) {
+                Serial.print(F("MESH | forward "));
+                Serial.print(origin);
+                Serial.print(F("->"));
+                Serial.print(finalDest);
+                Serial.print(F(" via "));
+                Serial.println(nextHop);
+                return true;
+            }
         }
     }
     // Slot transakcji zajety. Ramki NIE wolno porzucic: poprzedni skok juz dostal
     // jej radiowe ACK, wiec zadne ponowienie z tamtej strony nie nadejdzie.
     // Odkladamy ja do jednego gniazda i wysylamy z loop(), gdy slot sie zwolni.
+    // To jedyna alokacja na sciezce forwardu; String zostaje na stercie w rozmiarze
+    // najwiekszej odlozonej ramki - reserve() wykryje brak RAM, zanim cos zapiszemy.
     if (pendingForwardFrame.length() == 0) {
-        pendingForwardFrame = frame;
-        if (pendingForwardFrame.length() == frame.length()) { // kopia mogla pasc na OOM
+        if (pendingForwardFrame.reserve(frameLen)) {
+            composeDataFrame(pendingForwardFrame, origin, finalDest, ttl, flowId, payload);
             pendingForwardHop = nextHop;
             pendingForwardDeadline = millis() + 2500;
             Serial.println(F("MESH | forward odlozony (slot transakcji zajety)"));
             return true;
         }
-        pendingForwardFrame = "";
+        Serial.println(F("MESH | brak RAM na odlozony forward - porzucam"));
+        return false;
     }
     Serial.println(F("MESH | forward porzucony - gniazdo odlozen zajete"));
     return false;

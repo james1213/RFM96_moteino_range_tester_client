@@ -32,6 +32,18 @@
 #define CS_BUSY_RSSI_DBM  (-85)
 #define CS_MAX_WAIT_MS    400
 
+// ==================== BUFORY NADAWCZE O STALEJ POJEMNOSCI ====================
+// Oba bufory sa rezerwowane RAZ, w konstruktorze (sterta jest wtedy pusta, wiec
+// laduja na jej dnie) i nigdy nie rosna. Ramki sa skladane WPROST w nich
+// (acquireTxBuffer/commitTxBuffer), wiec goraca sciezka nadawania nie robi zadnej
+// alokacji. Wczesniej jedna wysylka testowa to byly 4-5 zywych kopii tresci
+// (String w main, ramka mesh, sendBuffer, ackCallback_paylod, ramka radiowa w
+// startSending - razem ok. 500 B chwilowo na 2 KB RAM) i przy 246 B wolnego
+// mesh odmawial kazdej wysylki komunikatem "brak RAM na ramke danych".
+// Najdluzsza ramka w systemie: OTA "<OTA>FLX?DAT?" + linia HEX (do 105) = 118 B.
+#define RADIO_TX_BUFFER_CAPACITY   128
+#define RADIO_ACK_BUFFER_CAPACITY  12   // "!255@-120" = 9 znakow
+
 // ==================== AUTOMATYCZNA REGULACJA MOCY (APC) ====================
 // Kazdy ACK niesie zwrotke "!<id>@<rssi>": RSSI, z jakim odbiorca uslyszal
 // kwitowana ramke. Nadawca reguluje SWOJA moc tak, by u odbiorcy trafic w okno
@@ -65,7 +77,12 @@ public:
     bool ackFramePendingTx = false; // ramka z zadaniem ACK zakolejkowana, ale jeszcze nie nadana
     unsigned long waitForAckStartTime = 0;
     unsigned long ackTimeout = 1000; //ms
-    String ackCallback_paylod = "";
+    // Ostatnia nadana ramka z zadaniem ACK ZOSTAJE w sendBuffer az do rozstrzygniecia
+    // transakcji (ACK / timeout) - to ona jest payloadem callbacku bledu i ponowien
+    // skoku mesh (resendRetained). Zastapila osobna kopie ackCallback_paylod (~120 B
+    // sterty na stale). retainedFrameValid gasnie, gdy ktos zajmie bufor nowa ramka.
+    bool txPending = false;          // ramka w sendBuffer czeka na nadanie
+    bool retainedFrameValid = false; // sendBuffer trzyma nadana ramke z zadaniem ACK
 
     void (*ackNotReceivedCallback)(String &payload);
     void (*ackReceivedCallback)();
@@ -75,8 +92,8 @@ public:
     void (*anyFrameReceivedCallback)(uint8_t senderId) = nullptr; // kazda poprawna ramka (mesh: dowod zycia sasiada)
     void (*dataSentCallback)();
 
-    String sendBuffer = "";
-    String ackSendBuffer = "";
+    String sendBuffer;    // pojemnosc RADIO_TX_BUFFER_CAPACITY, rezerwowana w konstruktorze
+    String ackSendBuffer; // pojemnosc RADIO_ACK_BUFFER_CAPACITY, j.w.; niepusty = ACK czeka na nadanie
     uint8_t messageId = 0;
     uint8_t pendingAckMessageId = 0; // id wyslanej ramki DAT, do ktorej dopasowujemy "!id"
     uint8_t sendBufferDest = 0;      // adresat i flaga ACK zwiazane z konkretnym buforem,
@@ -110,6 +127,31 @@ public:
 
 //    int receivedBytes[256];
 
+    RadioManager();
+
+    // Skladanie ramki wprost w buforze nadawczym (bez kopii):
+    //   String *f = acquireTxBuffer();      // nullptr = radio zajete (ramka czeka albo trwa transakcja ACK)
+    //   if (!txBufferFits(n)) releaseTxBuffer(); else { *f = ...; commitTxBuffer(...); }
+    // Bufor ma STALA pojemnosc - przed skladaniem sprawdz txBufferFits, bo String
+    // po przekroczeniu pojemnosci realokowalby bufor (albo po cichu uciął ramke).
+    String *acquireTxBuffer();
+    static bool txBufferFits(unsigned int bytes) { return bytes <= RADIO_TX_BUFFER_CAPACITY; }
+    bool commitTxBuffer(uint8_t address, bool ackRequested,
+                        void (*_ackReceivedCallback)() = nullptr,
+                        void (*_ackNotReceivedCallback)(String &payload) = nullptr,
+                        int8_t txPowerDbmOverride = -1); // >= 0: wymuszona moc tej jednej ramki (beacony)
+    void releaseTxBuffer();               // wolajacy zrezygnowal po acquire (np. za dlugi payload)
+    bool hasRetainedFrame();              // nadana ramka z zadaniem ACK wciaz lezy w buforze, slot wolny
+    String &retainedFrame();              // jej tresc (pusty String, gdy juz jej nie ma)
+    bool resendRetained(uint8_t address, void (*_ackReceivedCallback)(),
+                        void (*_ackNotReceivedCallback)(String &payload)); // ponowienie bez kopii
+
+    // Malowanie stosu: wolny obszar miedzy sterta a stosem dostaje znany wzor przy
+    // starcie; minStackGap() = najdluzszy nietkniety pas wzoru = najmniejszy zapas,
+    // jaki KIEDYKOLWIEK wystapil (stos zaciera wzor od gory, sterta chwilowa od dolu).
+    static void paintFreeStack();         // wolac jako pierwsza instrukcje setup()
+    static uint16_t minStackGap();
+
     void onDataReceived(void(*callback)(String &receivedText, uint8_t senderId));
     void onDataSent(void(*callback)());
     virtual void receiveDone(int packetSize);
@@ -120,23 +162,20 @@ public:
     void receiveLoop();
     String readReceivedData();
     void extractMessageIdAndSenderIdAndDestinationIdFromReceivedData(String &str);
-    int splitString(String &text, String *texts, char ch, int maxArrayLength);
     bool isAckPayload(const String &str);
-    bool isAckPayloadAndValidMessageId(String str);
+    bool isAckPayloadAndValidMessageId(const String &str);
     void waitForAckTimeoutLoop();
     void txStuckWatchdogLoop();
     static int freeRam();
-    bool buildTaggedPayload(String &out, const char *tag, const String &body);
+    // Wygodne opakowania: kopiuja tresc do bufora nadawczego (jedna kopia, bez malloc).
     bool sendOta(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     bool sendTagged(String &taggedPayload, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
-    bool sendTaggedAtPower(String &taggedPayload, uint8_t address, int8_t txPowerDbmOverride); // bez ACK, wymuszona moc (beacony mesh)
     bool send(String &str, uint8_t address, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr);
     bool startSending(String &str, uint8_t address, bool ackRequested);
     unsigned long lastRamErrorMillis = 0;
     // Nasluch kanalu przed nadaniem (CSMA): jesli RSSI chwilowe przekracza prog,
     // ktos wlasnie nadaje - odkladamy ramke o obieg petli, najdluzej CS_MAX_WAIT_MS.
     unsigned long csBusySinceMillis = 0;
-    void LoRa_sendMessage(const String &message);
     void LoRa_txMode();
     void sendAck();
     void setSendAckAutomaticly(bool value);
@@ -182,7 +221,11 @@ public:
     void DEBUGlog(long n, int base = 10);
 
 private:
-    bool sendDirectly(String &str, uint8_t address, bool ackRequested= false, void (*_ackReceivedCallback)() = nullptr, void (*_ackNotReceivedCallback)(String &payload) = nullptr, bool useAckBuffer = false);
+    bool sendWithTag(const __FlashStringHelper *tag, const String &body, uint8_t address,
+                     void (*_ackReceivedCallback)(), void (*_ackNotReceivedCallback)(String &payload));
+    bool sendDirectly(String &str, uint8_t address, bool ackRequested = false,
+                      void (*_ackReceivedCallback)() = nullptr,
+                      void (*_ackNotReceivedCallback)(String &payload) = nullptr);
 };
 
 
