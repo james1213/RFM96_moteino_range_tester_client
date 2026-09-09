@@ -54,6 +54,14 @@
 // (zwrotka dla regulatora mocy) - dwa bajty zamiast dawnego "!<id>@<rssi>".
 #define RADIO_ACK_PAYLOAD_SIZE 2
 
+// Potwierdzenia czekaja w krotkiej kolejce, a nie w jednym gniezdzie. Nadanie
+// potrafi sie odlozyc o 400 ms (nasluch kanalu) albo o obieg petli (nieodczytana
+// ramka w FIFO), a przy trzech wezlach i kadencji 1 s w tym czasie potrafi
+// przyjsc kolejna ramka do skwitowania. Z jednym gniazdem pierwsze potwierdzenie
+// przepadalo bezgłośnie: nadawca odliczal timeout, a mesh uniewaznial trasy
+// przez zywego sasiada.
+#define RADIO_ACK_QUEUE_LEN 3
+
 // Moc nadawania RFM95/96: uzywamy wyjscia PA_BOOST, bo tylko ono jest podlaczone
 // do anteny w modulach HopeRF (wyjscie RFO zostaje niepodlaczone - dalo by ~zero mocy).
 // Powyzej 17 dBm uklad wchodzi w tryb wysokiej mocy (PA_DAC) i wymaga podniesienia
@@ -125,9 +133,10 @@ public:
     uint8_t rxPayload[RADIO_PAYLOAD_CAPACITY + 1];
     uint8_t rxLength = 0;
     uint8_t lastFrameType = RADIO_TYPE_APP; // typ ostatnio odebranej ramki (z naglowka)
-    uint8_t ackPayload[RADIO_ACK_PAYLOAD_SIZE];
-    bool ackPending = false;         // potwierdzenie czeka na nadanie
-    uint8_t ackSendBufferDest = 0;
+    uint8_t ackQueue[RADIO_ACK_QUEUE_LEN][RADIO_ACK_PAYLOAD_SIZE];
+    uint8_t ackQueueDest[RADIO_ACK_QUEUE_LEN];
+    uint8_t ackQueueHead = 0;        // najstarsze czekajace potwierdzenie
+    uint8_t ackQueueCount = 0;       // 0 = nic nie czeka
 
     RadioFailCallback ackNotReceivedCallback = nullptr;
     void (*ackReceivedCallback)() = nullptr;

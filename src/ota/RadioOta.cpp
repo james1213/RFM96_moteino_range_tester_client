@@ -97,6 +97,16 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
     }
 
 
+    // W trakcie nadawania pakietu HEX i czekania na odpowiedz NIE czytamy linii do
+    // _input: leza tam dane, ktore wlasnie ida w eter przy kazdym ponowieniu.
+    // Spozniony duplikat z PC podmienilby je w polowie transferu i target dostalby
+    // inna tresc niz numer, o ktory prosil. Takie linie po prostu wyrzucamy.
+    if (Serial.available() && (otaState == OtaState(SENDING_WIRELESS_HEX)
+                               || otaState == OtaState(WAITING_FOR_WIRELESS_HEX_RESPONSE))) {
+        while (Serial.available()) {
+            if (Serial.read() == 10) break;
+        }
+    }
     if (Serial.available()) {
         byte inputLen = readSerialLine(_input, 10, OTA_SERIAL_LINE_MAX, 100);
         if (inputLen >= OTA_SERIAL_LINE_MAX) {
@@ -129,8 +139,16 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                 }
             } else if (inputLen > 7 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'T' && _input[5] == 'O' && _input[6] == '?') {
                 if (otaState == OtaState(WAITING_FOR_SERIAL_HANDSHAKE)) {
-                    targetID = String(_input).substring(7).toInt();
-                    otaState = (OtaState(SENDING_WIRELESS_HANDSHAKE));
+                    long requested = atol(_input + 7);
+                    // Adres jedzie w ramce jako jeden bajt: 0 nie istnieje, 255 to
+                    // broadcast. Bez tej kontroli "FLX?TO?300" programowaloby wezel 44.
+                    if (requested < 1 || requested > 254) {
+                        Serial.println(F("FLX?HANDSHAKE?TIMEOUT"));
+                        Serial.println(F("OTA | ERROR: nodeId poza zakresem 1..254"));
+                    } else {
+                        targetID = (uint16_t) requested;
+                        otaState = (OtaState(SENDING_WIRELESS_HANDSHAKE));
+                    }
                 }
             } else if (inputLen > 8 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'H' && _input[5] == 'E' && _input[6] == 'X' && _input[7] == '?') {
                 if (otaState == OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL)) {
@@ -180,7 +198,12 @@ bool RadioOta::radioSendHexFromSerial() {
     const char *hexLine = _input + 8; // "<numer>?<base64>?<crc>" prosto z bufora serialowego
     size_t lineLen = strlen(hexLine);
     if (!RadioManager::txBufferFits(OTA_DAT_PREFIX_LEN + lineLen)) {
-        Serial.println(F("OTA | ERROR: linia HEX za dluga na ramke radiowa - nie wyslano"));
+        // To nie jest chwilowa przeszkoda, tylko zla konfiguracja rozmiaru pakietu -
+        // ponawianie w nieskonczonosc zostawialoby isOtaInProgress() na zawsze, a
+        // z nim zamrozony mesh i wstrzymany ruch testowy. Przerywamy transfer.
+        Serial.println(F("FLX?HEX?WIRELESS_TIMEOUT"));
+        Serial.println(F("OTA | ERROR: linia HEX za dluga na ramke radiowa - przerywam"));
+        resetStateAndValues();
         return false;
     }
     uint8_t *frame = manager->acquireTxBuffer();
