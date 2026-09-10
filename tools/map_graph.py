@@ -302,7 +302,8 @@ def follow(log_path, svg_path, route, poll_seconds=1.0, keep_bytes=400000):
 
     Czytamy binarnie i pilnujemy przesuniecia w bajtach, bo plik jest w tym czasie
     dopisywany przez inny proces. Gdy zmaleje (rejestrator wystartowal od nowa),
-    zaczynamy od poczatku.
+    zaczynamy od poczatku. Chwilowa odmowa dostepu do pliku nie konczy sledzenia -
+    na Windowsie zdarza sie zawsze, gdy dwa procesy siegaja po ten sam plik naraz.
     """
     text = ""
     offset = 0
@@ -316,10 +317,17 @@ def follow(log_path, svg_path, route, poll_seconds=1.0, keep_bytes=400000):
         if size < offset:
             text, offset = "", 0
         if size > offset:
-            with open(log_path, "rb") as f:
-                f.seek(offset)
-                chunk = f.read()
-                offset = f.tell()
+            try:
+                with open(log_path, "rb") as f:
+                    f.seek(offset)
+                    chunk = f.read()
+                    offset = f.tell()
+            except OSError:
+                # Windows potrafi odmowic dostepu na ulamek sekundy, gdy rejestrator
+                # wlasnie dopisuje linie (albo gdy log lezy na dysku sieciowym).
+                # To nie powod, zeby konczyc - probujemy przy nastepnym obiegu.
+                time.sleep(poll_seconds)
+                continue
             text += chunk.decode("utf-8", errors="replace")
             if len(text) > keep_bytes:
                 # Zostawiamy ogon na granicy linii - starsze zrzuty i tak sa
