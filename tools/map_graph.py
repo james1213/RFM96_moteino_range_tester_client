@@ -1,40 +1,67 @@
 # -*- coding: utf-8 -*-
-"""Zamienia zrzut mapy sieci z wezla ("MAP ..." na serialu) w graf.
+"""Zamienia zrzuty mapy sieci ("MAP ..." na serialu) w opis tekstowy albo rysunek.
 
-Uzycie:
-    python map_graph.py serial_log.txt          # podsumowanie tekstowe
-    python map_graph.py serial_log.txt --dot    # graf w formacie Graphviz
-    type COM.log | python map_graph.py -        # ze standardowego wejscia
+    python map_graph.py log.txt                          podsumowanie tekstowe
+    python map_graph.py log.txt --svg mapa.svg           rysunek do otwarcia w przegladarce
+    python map_graph.py log.txt --route 2:3              slad trasy z wezla 2 do 3
+    python map_graph.py log.txt --svg mapa.svg --route 2:3
+    python map_graph.py log.txt --dot                    Graphviz, jesli masz go zainstalowanego
+    type COM.log | python map_graph.py - --svg mapa.svg
 
-Wezel wypisuje mape po komendzie "MAP" (a po "MAP <id>" dopytuje odlegly wezel;
-odpowiedz dopisuje sie do obrazu jako kolejne linie "MAP E"). Format:
+Rysunek jest generowany wprost do SVG - bez Graphviza i bez zadnej biblioteki
+spoza standardowego Pythona, bo na tej maszynie nie ma ani jednego, ani drugiego.
+Plik SVG otwiera sie dwuklikiem w przegladarce i skaluje bez utraty jakosci.
+
+Format zrzutu (wezel wypisuje go po komendzie MAP):
 
     MAP BEGIN <wezel> <czas pracy s>
     MAP N <sasiad> <tlumienie dB>            lacze zmierzone przez ten wezel
     MAP E <a> <b> <tlumienie dB> <wiek s>    lacze uslyszane od kogos innego
-    MAP R <cel> <przez> <koszt>              z czego korzysta routing
+    MAP R <cel> <przez> <koszt>              PIERWSZY SKOK trasy do celu
     MAP END
-    MAP RESP <wezel> <liczba sasiadow>       naglowek odpowiedzi na zapytanie
+    MAP RESP <wezel> <liczba sasiadow>       naglowek odpowiedzi na MAP <id>
 
-Brany jest POD UWAGE OSTATNI kompletny zrzut w pliku - log potrafi obejmowac
-wiele godzin, a mapa ma opisywac stan biezacy. Linie "MAP E" spoza zrzutu
-(odpowiedzi, ktore przyszly pozniej) sa dokladane na koncu.
+WAZNE OGRANICZENIE. Routing jest skok po skoku, wiec wezel zna tylko NASTEPNY
+SKOK do celu, a nie cala droge. Ze zrzutu jednego wezla da sie narysowac
+pierwszy skok i nic wiecej. Zeby zobaczyc cala trase, wpisz MAP na konsoli
+kazdego posrednika i wklej wszystkie zrzuty do jednego pliku - skrypt polaczy
+tablice routingu w lancuch. Czego brakuje, o tym powie wprost.
 """
-import sys
+import argparse
+import math
 import re
+import sys
 
 # Linie z rejestratora bywaja poprzedzone znacznikiem czasu i prefiksem portu,
 # np. "12:31:02 [COM] | MAP E 1 3 108 4" - bierzemy wszystko od slowa MAP.
 LINE = re.compile(r"MAP\s+(BEGIN|END|RESP|[NER])\b(.*)")
 
+# Progi tlumienia zgodne z linkCost() w MeshRouter: do 70 dB skok kosztuje
+# minimum, powyzej rosnie o 1 na kazde 8 dB.
+QUALITY = ((70, "bardzo dobre", "#2e7d32"),
+           (90, "dobre", "#7cb342"),
+           (110, "slabe", "#f9a825"),
+           (999, "na granicy", "#c62828"))
+
+
+def quality(loss_db):
+    for limit, name, colour in QUALITY:
+        if loss_db <= limit:
+            return name, colour
+    return QUALITY[-1][1], QUALITY[-1][2]
+
 
 def parse(text):
-    collector = None
-    uptime = None
-    own = {}      # sasiad -> tlumienie (lacze zmierzone przez kolektor)
-    edges = {}    # (a, b) -> (tlumienie, wiek)
-    routes = {}   # cel -> (przez, koszt)
-    started = False
+    """Zwraca (dumps, edges).
+
+    dumps: {wezel: {"uptime":, "neighbours": {id: tlumienie}, "routes": {cel: (przez, koszt)}}}
+           Kazdy kolejny MAP BEGIN tego samego wezla zastepuje poprzedni zrzut -
+           log potrafi obejmowac godziny, a mapa ma opisywac stan biezacy.
+    edges: {(a, b): (tlumienie, wiek)} - krawedzie ze wszystkich zrzutow razem.
+    """
+    dumps = {}
+    edges = {}
+    current = None
 
     for raw in text.splitlines():
         m = LINE.search(raw)
@@ -43,95 +70,221 @@ def parse(text):
         kind, rest = m.group(1), m.group(2).split()
         try:
             if kind == "BEGIN":
-                # Nowy zrzut uniewaznia poprzedni, ale nie zebrane pozniej odpowiedzi.
-                collector, uptime = int(rest[0]), int(rest[1])
-                own, routes = {}, {}
-                started = True
-            elif kind == "N" and started:
-                own[int(rest[0])] = int(rest[1])
+                node = int(rest[0])
+                current = {"uptime": int(rest[1]), "neighbours": {}, "routes": {}}
+                dumps[node] = current
+            elif kind == "END":
+                current = None
+            elif kind == "N" and current is not None:
+                current["neighbours"][int(rest[0])] = int(rest[1])
+            elif kind == "R" and current is not None:
+                current["routes"][int(rest[0])] = (int(rest[1]), int(rest[2]))
             elif kind == "E":
                 a, b, loss = int(rest[0]), int(rest[1]), int(rest[2])
                 age = int(rest[3]) if len(rest) > 3 else 0
                 edges[(min(a, b), max(a, b))] = (loss, age)
-            elif kind == "R" and started:
-                routes[int(rest[0])] = (int(rest[1]), int(rest[2]))
         except (IndexError, ValueError):
             continue  # linia ucieta w polowie przez inny watek logu
 
-    if collector is None:
-        return None
-    for neighbour, loss in own.items():
-        edges[(min(collector, neighbour), max(collector, neighbour))] = (loss, 0)
-    return collector, uptime, own, edges, routes
+    # Wlasne, zmierzone lacza sa dokladniejsze od zaslyszanych - wpisujemy je na koncu.
+    for node, dump in dumps.items():
+        for neighbour, loss in dump["neighbours"].items():
+            edges[(min(node, neighbour), max(node, neighbour))] = (loss, 0)
+    return dumps, edges
 
 
-def quality(loss_db):
-    """Slowny opis tlumienia - ta sama skala, wedlug ktorej wezel liczy koszt trasy."""
-    if loss_db <= 70:
-        return "bardzo dobre"
-    if loss_db <= 90:
-        return "dobre"
-    if loss_db <= 110:
-        return "slabe"
-    return "na granicy"
+def trace(dumps, src, dst):
+    """Slad trasy przez kolejne tablice routingu. Zwraca (lista wezlow, powod przerwania)."""
+    path = [src]
+    node = src
+    while node != dst:
+        dump = dumps.get(node)
+        if dump is None:
+            return path, "brak zrzutu z wezla %d - wpisz na nim MAP i dolacz log" % node
+        route = dump["routes"].get(dst)
+        if route is None:
+            return path, "wezel %d nie ma w tablicy trasy do %d" % (node, dst)
+        via, cost = route
+        if cost >= 255:
+            return path, "wezel %d ma trase do %d oznaczona jako nieosiagalna" % (node, dst)
+        if via in path:
+            return path, "petla routingu: %d wskazuje z powrotem na %d" % (node, via)
+        path.append(via)
+        node = via
+        if len(path) > 10:
+            return path, "trasa dluzsza niz 10 skokow - przerywam"
+    return path, None
 
 
-def as_text(collector, uptime, own, edges, routes):
-    out = ["Mapa widziana z wezla %d (czas pracy %d s)" % (collector, uptime), ""]
-    nodes = sorted({n for edge in edges for n in edge} | set(routes))
+def as_text(dumps, edges, route):
+    collectors = sorted(dumps)
+    out = ["Zrzuty z wezlow: " + ", ".join(str(c) for c in collectors), ""]
+    nodes = sorted({n for edge in edges for n in edge} | set(collectors))
     out.append("Wezly: " + ", ".join(str(n) for n in nodes))
     out.append("")
     out.append("Lacza (tlumienie sciezki):")
     for (a, b), (loss, age) in sorted(edges.items()):
-        mine = " zmierzone" if a == collector or b == collector else ""
+        name, _ = quality(loss)
         stale = "" if age == 0 else ", sprzed %d s" % age
-        out.append("  %d - %d   %3d dB  (%s%s)%s" % (a, b, loss, quality(loss), stale, mine))
-    if routes:
+        out.append("  %d - %d   %3d dB  (%s%s)" % (a, b, loss, name, stale))
+    for node in collectors:
+        routes = dumps[node]["routes"]
+        if not routes:
+            continue
         out.append("")
-        out.append("Trasy uzywane przez wezel %d:" % collector)
+        out.append("Pierwszy skok z wezla %d:" % node)
         for dest in sorted(routes):
             via, cost = routes[dest]
             how = "bezposrednio" if via == dest else "przez %d" % via
-            unreachable = "  NIEOSIAGALNY" if cost >= 255 else ""
-            out.append("  do %d: %s (koszt %d)%s" % (dest, how, cost, unreachable))
-    unknown = [n for n in nodes if n != collector and n not in own
-               and not any(n in edge for edge in edges if collector in edge)]
-    if unknown:
+            bad = "  NIEOSIAGALNY" if cost >= 255 else ""
+            out.append("  do %d: %s (koszt %d)%s" % (dest, how, cost, bad))
+    if route:
+        src, dst = route
+        path, why = trace(dumps, src, dst)
         out.append("")
-        out.append("Poza zasiegiem beaconow (wiedza z drugiej reki): "
-                   + ", ".join(str(n) for n in unknown))
+        out.append("Trasa %d -> %d: %s" % (src, dst, " -> ".join(str(n) for n in path)))
+        if why:
+            out.append("  dalej nie wiadomo: " + why)
     return "\n".join(out)
 
 
-def as_dot(collector, edges):
-    out = ["graph siec {", '  layout=neato;', '  node [shape=circle];']
-    for node in sorted({n for edge in edges for n in edge}):
-        mark = ' [style=filled fillcolor=lightgrey]' if node == collector else ''
-        out.append('  %d%s;' % (node, mark))
+def layout(nodes, width, height):
+    """Wezly na okregu. Prosto, przewidywalnie i czytelnie do kilkunastu wezlow."""
+    cx, cy = width / 2.0, height / 2.0
+    radius = min(width, height) / 2.0 - 80
+    positions = {}
+    count = max(1, len(nodes))
+    for i, node in enumerate(nodes):
+        angle = -math.pi / 2 + 2 * math.pi * i / count
+        positions[node] = (cx + radius * math.cos(angle), cy + radius * math.sin(angle))
+    return positions
+
+
+def as_svg(dumps, edges, route, width=760, height=620):
+    nodes = sorted({n for edge in edges for n in edge} | set(dumps))
+    pos = layout(nodes, width, height)
+    path, why = trace(dumps, route[0], route[1]) if route else ([], None)
+    hops = set()
+    for i in range(len(path) - 1):
+        a, b = path[i], path[i + 1]
+        hops.add((min(a, b), max(a, b)))
+
+    svg = ['<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
+           'viewBox="0 0 %d %d" font-family="Segoe UI, sans-serif">' % (width, height, width, height),
+           '<rect width="100%" height="100%" fill="#fbfbfb"/>',
+           '<defs><marker id="grot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" '
+           'markerHeight="6" orient="auto-start-reverse">'
+           '<path d="M 0 0 L 10 5 L 0 10 z" fill="#1565c0"/></marker></defs>']
+
+    title = "Mapa sieci"
+    if route:
+        title += "   trasa %d - %d: %s" % (route[0], route[1],
+                                           " - ".join(str(n) for n in path))
+    svg.append('<text x="20" y="30" font-size="16" fill="#222">%s</text>' % title)
+    if route and why:
+        svg.append('<text x="20" y="52" font-size="12" fill="#c62828">dalej nie wiadomo: %s</text>'
+                   % why)
+
+    # Najpierw wszystkie lacza, zeby trasa mogla sie na nich polozyc.
+    for (a, b), (loss, age) in sorted(edges.items()):
+        if a not in pos or b not in pos:
+            continue
+        (x1, y1), (x2, y2) = pos[a], pos[b]
+        _, colour = quality(loss)
+        dash = ' stroke-dasharray="6 4"' if age > 30 else ''
+        svg.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="%s" '
+                   'stroke-width="2"%s/>' % (x1, y1, x2, y2, colour, dash))
+        svg.append('<text x="%.1f" y="%.1f" font-size="11" fill="#555" text-anchor="middle">'
+                   '%d dB</text>' % ((x1 + x2) / 2, (y1 + y2) / 2 - 4, loss))
+
+    # Trasa: gruba podkladka pod laczami plus strzalka na kierunek kazdego skoku.
+    for i in range(len(path) - 1):
+        a, b = path[i], path[i + 1]
+        if a not in pos or b not in pos:
+            continue
+        (x1, y1), (x2, y2) = pos[a], pos[b]
+        # Skracamy odcinek o promien kolka, zeby grot strzalki nie chowal sie pod wezlem.
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / length, dy / length
+        svg.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="#1565c0" '
+                   'stroke-width="7" stroke-opacity="0.28"/>' % (x1, y1, x2, y2))
+        svg.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="#1565c0" '
+                   'stroke-width="2" marker-end="url(#grot)"/>'
+                   % (x1 + ux * 24, y1 + uy * 24, x2 - ux * 26, y2 - uy * 26))
+
+    for node in nodes:
+        x, y = pos[node]
+        if route and node == route[0]:
+            fill, stroke = "#1565c0", "#0d3c73"
+        elif route and node == route[1]:
+            fill, stroke = "#2e7d32", "#1b4d20"
+        elif node in dumps:
+            fill, stroke = "#ffffff", "#1565c0"   # wezel, z ktorego mamy zrzut
+        else:
+            fill, stroke = "#eeeeee", "#999999"   # znany tylko z cudzych opowiesci
+        text = "#ffffff" if fill.startswith("#1") or fill.startswith("#2") else "#222222"
+        svg.append('<circle cx="%.1f" cy="%.1f" r="22" fill="%s" stroke="%s" stroke-width="2"/>'
+                   % (x, y, fill, stroke))
+        svg.append('<text x="%.1f" y="%.1f" font-size="15" text-anchor="middle" fill="%s">'
+                   '%d</text>' % (x, y + 5, text, node))
+
+    legend = ["biale kolko: mamy z niego zrzut", "szare: znane tylko z cudzych beaconow",
+              "przerywana linia: krawedz starsza niz 30 s"]
+    for i, item in enumerate(legend):
+        svg.append('<text x="20" y="%d" font-size="11" fill="#666">%s</text>'
+                   % (height - 46 + i * 15, item))
+    svg.append('</svg>')
+    return "\n".join(svg)
+
+
+def as_dot(dumps, edges, route):
+    path, _ = trace(dumps, route[0], route[1]) if route else ([], None)
+    hops = {(min(path[i], path[i + 1]), max(path[i], path[i + 1])) for i in range(len(path) - 1)}
+    out = ["graph siec {", "  layout=neato;", "  node [shape=circle];"]
+    for node in sorted({n for edge in edges for n in edge} | set(dumps)):
+        mark = ' [style=filled fillcolor=lightgrey]' if node in dumps else ''
+        out.append("  %d%s;" % (node, mark))
     for (a, b), (loss, _) in sorted(edges.items()):
-        # Grubsza krawedz = lepsze lacze; dlugosc rosnie z tlumieniem.
-        width = max(1, 5 - (loss - 60) // 15)
-        out.append('  %d -- %d [label="%d dB", penwidth=%d];' % (a, b, loss, width))
+        width = 6 if (a, b) in hops else max(1, 5 - (loss - 60) // 15)
+        colour = ' color=blue' if (a, b) in hops else ''
+        out.append('  %d -- %d [label="%d dB", penwidth=%d%s];' % (a, b, loss, width, colour))
     out.append("}")
     return "\n".join(out)
 
 
+def parse_route(value):
+    try:
+        src, dst = value.split(":")
+        return int(src), int(dst)
+    except ValueError:
+        raise argparse.ArgumentTypeError("trase podaj jako <zrodlo>:<cel>, np. 2:3")
+
+
 def main():
-    args = [a for a in sys.argv[1:] if a != "--dot"]
-    if not args:
-        print(__doc__)
-        return 1
-    text = sys.stdin.read() if args[0] == "-" else open(args[0], encoding="utf-8",
-                                                        errors="replace").read()
-    parsed = parse(text)
-    if parsed is None:
+    ap = argparse.ArgumentParser(description="Rysuje mape sieci i slad trasy ze zrzutow MAP.")
+    ap.add_argument("log", help="plik z logiem serialowym albo - dla standardowego wejscia")
+    ap.add_argument("--svg", metavar="PLIK", help="zapisz rysunek SVG (bez zadnych zaleznosci)")
+    ap.add_argument("--dot", action="store_true", help="wypisz graf w formacie Graphviz")
+    ap.add_argument("--route", type=parse_route, metavar="A:B",
+                    help="podswietl trase z wezla A do wezla B")
+    args = ap.parse_args()
+
+    text = sys.stdin.read() if args.log == "-" else open(args.log, encoding="utf-8",
+                                                         errors="replace").read()
+    dumps, edges = parse(text)
+    if not dumps and not edges:
         print("Nie znalazlem zadnego zrzutu mapy. Wpisz MAP na konsoli wezla.")
         return 1
-    collector, uptime, own, edges, routes = parsed
-    if "--dot" in sys.argv[1:]:
-        print(as_dot(collector, edges))
-    else:
-        print(as_text(collector, uptime, own, edges, routes))
+
+    if args.svg:
+        with open(args.svg, "w", encoding="utf-8") as f:
+            f.write(as_svg(dumps, edges, args.route))
+        print("Zapisano %s - otworz dwuklikiem w przegladarce." % args.svg)
+    if args.dot:
+        print(as_dot(dumps, edges, args.route))
+    if not args.svg and not args.dot:
+        print(as_text(dumps, edges, args.route))
     return 0
 
 
