@@ -27,11 +27,12 @@ Format zrzutu (wezel wypisuje go po komendzie MAP):
     MAP END
     MAP RESP <wezel> <liczba sasiadow>       naglowek odpowiedzi na MAP <id>
 
-WAZNE OGRANICZENIE. Routing jest skok po skoku, wiec wezel zna tylko NASTEPNY
-SKOK do celu, a nie cala droge. Ze zrzutu jednego wezla da sie narysowac
-pierwszy skok i nic wiecej. Zeby zobaczyc cala trase, wpisz MAP na konsoli
-kazdego posrednika i wklej wszystkie zrzuty do jednego pliku - skrypt polaczy
-tablice routingu w lancuch. Czego brakuje, o tym powie wprost.
+CALA TRASA Z JEDNEGO WEZLA. Routing jest skok po skoku, wiec wezel zna tylko
+NASTEPNY SKOK do celu. Komenda MAP * kaze podlaczonemu wezlowi odpytac po kolei
+wszystkie znane mu wezly o ich tablice tras; kazda odpowiedz wypisuje sie jako
+osobny zrzut podpisany numerem swojego wezla. Skrypt sklada z tych tablic
+lancuch i rysuje cala droge, choc do PC podlaczony jest tylko jeden wezel.
+Czego brakuje, o tym powie wprost - poda numer wezla bez zrzutu.
 """
 import argparse
 import math

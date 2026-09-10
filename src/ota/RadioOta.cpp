@@ -121,8 +121,14 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
 
             if (strncmp_P(_input, PSTR("MAP"), 3) == 0) {
                 // "MAP" = zrzut tego, co ten wezel wie o sieci.
-                // "MAP <id>" = zapytanie o liste sasiadow wskazanego wezla.
-                if (mapCommandCallback) mapCommandCallback((uint8_t) atoi(_input + 3));
+                // "MAP <id>" = zapytanie wskazanego wezla o sasiadow i trasy.
+                // "MAP *" = to samo, ale po kolei do wszystkich znanych wezlow.
+                // 255 to adres rozgloszeniowy, wiec nigdy nie jest numerem wezla -
+                // sluzy tu za znacznik "wszyscy".
+                const char *arg = _input + 3;
+                while (*arg == ' ') arg++;
+                uint8_t queryId = (*arg == '*') ? 255 : (uint8_t) atoi(arg);
+                if (mapCommandCallback) mapCommandCallback(queryId);
             } else if (strstr(_input, "EEPROMRESET") == _input) {
                 resetEEPROM();
             } else if (strstr(_input, "SETTINGS?") == _input) {

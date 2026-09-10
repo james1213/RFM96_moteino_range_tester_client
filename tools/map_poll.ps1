@@ -19,9 +19,11 @@
     DTR zostaje OPUSZCZONY celowo: tam, gdzie ta linia jest wpieta w reset,
     podniesienie jej restartuje wezel, a logowanie nie ma tego robic.
 
-    JEDEN WEZEL TO JEDEN SKOK. Ze zrzutu z jednego portu odczytasz mape jego
-    okolicy i PIERWSZY skok kazdej trasy - dalszej drogi ten wezel nie zna.
-    Cala trasa wymaga podania tu portow wszystkich posrednikow.
+    CALA TRASA Z JEDNEGO PORTU. Domyslnie skrypt wysyla "MAP *", czyli kaze
+    podlaczonemu wezlowi odpytac po kolei pozostale o ich tablice tras. Kazda
+    odpowiedz wpada do logu jako osobny zrzut, wiec map_graph.py sklada z nich
+    cala droge. Parametrem -Command mozna to zmienic na samo "MAP", jesli chcesz
+    tylko obraz okolicy jednego wezla.
 
 .EXAMPLE
     .\map_poll.ps1 -Ports COM5 -LogFile Z:\logi\mapa.log
@@ -35,6 +37,7 @@ param(
     [int]$BaudRate = 115200,
     [string]$LogFile = "mapa.log",
     [int]$IntervalSeconds = 15,
+    [string]$Command = "MAP *",
     [switch]$NoQuery
 )
 
@@ -68,7 +71,7 @@ $header = "=== START {0} ===" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 Add-Content -Path $LogFile -Value $header -Encoding utf8
 Write-Host "loguje do $LogFile, przerwij Ctrl+C"
 if (-not $NoQuery) {
-    Write-Host "pytam o mape co $IntervalSeconds s"
+    Write-Host "wysylam [$Command] co $IntervalSeconds s"
 }
 
 # Pierwsze zapytanie od razu, kolejne co IntervalSeconds.
@@ -79,9 +82,9 @@ try {
         if (-not $NoQuery -and (Get-Date) -ge $nextQuery) {
             foreach ($name in @($open.Keys)) {
                 try {
-                    $open[$name].WriteLine("MAP")
+                    $open[$name].WriteLine($Command)
                 } catch {
-                    Write-Host "$name : nie udalo sie wyslac MAP ($($_.Exception.Message))"
+                    Write-Host "$name : nie udalo sie wyslac $Command ($($_.Exception.Message))"
                 }
             }
             $nextQuery = (Get-Date).AddSeconds($IntervalSeconds)

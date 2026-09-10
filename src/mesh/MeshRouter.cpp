@@ -18,6 +18,8 @@ void MeshRouter::setFrozen(bool value) {
         hopRetriesLeft = 0;
         hopRetryPending = false;
         pendingForwardLen = 0;
+        walkActive = false;      // odpytywanie topologii tez czeka na koniec transferu
+        topoRespPendingTo = 0;
         appOkCallback = nullptr;
         appFailCallback = nullptr;
     }
@@ -68,12 +70,14 @@ void MeshRouter::loop() {
     // odbioru, kiedy slot transakcji ACK czesto jest jeszcze zajety.
     if (topoRespPendingTo != 0 && !manager->waitingForAck && !hopRetryPending
         && pendingForwardLen == 0) {
-        uint8_t body[1 + MESH_NEIGHBOR_ENTRY * MESH_MAX_NEIGHBORS];
-        uint8_t n = buildNeighborList(body);
+        uint8_t body[MESH_TOPO_REPORT_MAX];
+        uint8_t n = buildTopologyReport(body);
         if (sendTyped(MESH_MSG_TOPO_RESP, topoRespPendingTo, body, n, nullptr, nullptr)) {
             topoRespPendingTo = 0;
         }
     }
+
+    topologyWalkLoop();
 
     if (millis() - lastBeaconMillis >= beaconDueInMs) {
         lastBeaconMillis = millis();
@@ -367,6 +371,58 @@ uint8_t MeshRouter::buildNeighborList(uint8_t *out) {
     return n;
 }
 
+// Sasiedzi i tablica tras w jednej odpowiedzi. Druga sekcja jest istotniejsza:
+// bez niej wezel przy PC widzi tylko pierwszy skok kazdej trasy, bo tyle wie sam.
+uint8_t MeshRouter::buildTopologyReport(uint8_t *out) {
+    uint8_t n = buildNeighborList(out);
+    uint8_t countIndex = n++;
+    uint8_t count = 0;
+    for (auto &r : routes) {
+        if (r.dest == 0) continue;
+        out[n++] = r.dest;
+        out[n++] = r.nextHop;
+        out[n++] = r.metric;
+        count++;
+    }
+    out[countIndex] = count;
+    return n;
+}
+
+// Odpytanie wszystkich znanych wezlow, jeden po drugim. Naraz moze byc tylko
+// jedno pytanie w locie, bo warstwa radiowa ma jeden slot transakcji ACK.
+void MeshRouter::topologyWalkLoop() {
+    if (!walkActive) return;
+    if ((long) (millis() - walkNextAtMillis) < 0) return;
+    if (manager->waitingForAck || hopRetryPending) {
+        walkNextAtMillis = millis() + 200;
+        return;
+    }
+    while (walkIndex < MESH_MAX_ROUTES) {
+        Route &r = routes[walkIndex];
+        if (r.dest == 0 || r.metric >= MESH_METRIC_INFINITY) {
+            walkIndex++;
+            continue;
+        }
+        if (requestTopology(r.dest)) {
+            walkIndex++;
+            walkNextAtMillis = millis() + MESH_WALK_GAP_MS;
+        } else {
+            // Radio zajete - ten sam cel jeszcze raz za chwile.
+            walkNextAtMillis = millis() + 300;
+        }
+        return;
+    }
+    walkActive = false;
+    Serial.println(F("MAP | odpytalem wszystkie znane wezly"));
+}
+
+void MeshRouter::requestTopologyAll() {
+    walkIndex = 0;
+    walkActive = true;
+    walkNextAtMillis = millis();
+    Serial.println(F("MAP | odpytuje znane wezly po kolei"));
+}
+
 // Krawedz zapisujemy w jednej, kanonicznej kolejnosci (a < b) - inaczej ta sama
 // krawedz weszlaby dwa razy, raz z beaconu kazdego z jej koncow.
 void MeshRouter::addEdge(uint8_t a, uint8_t b, uint8_t pathLossDb) {
@@ -608,7 +664,8 @@ void MeshRouter::handleData(uint8_t msgType, uint8_t *body, uint8_t len, uint8_t
             // Lista sasiadow odleglego wezla: do mapy i od razu na serial, zeby
             // kolektor przy PC widzial odpowiedz w tym samym formacie co "MAP".
             uint8_t count = payloadLen > 0 ? payload[0] : 0;
-            if ((uint16_t) 1 + (uint16_t) count * MESH_NEIGHBOR_ENTRY > payloadLen) return;
+            uint8_t used = (uint8_t) (1 + count * MESH_NEIGHBOR_ENTRY);
+            if (used > payloadLen) return;
             Serial.print(F("MAP RESP "));
             Serial.print(origin);
             Serial.print(' ');
@@ -625,6 +682,29 @@ void MeshRouter::handleData(uint8_t msgType, uint8_t *body, uint8_t len, uint8_t
                 Serial.print(' ');
                 Serial.print(pl);
                 Serial.println(F(" 0"));
+            }
+            // Druga sekcja: tablica tras odleglego wezla. Wypisujemy ja w tym samym
+            // formacie co zrzut lokalny, podpisany JEGO numerem - dzieki temu skrypt
+            // na PC sklada z tego lancuch nastepnych skokow i rysuje cala trase,
+            // choc podlaczony jest tylko ten jeden wezel.
+            if (payloadLen > used) {
+                const uint8_t *rt = payload + used;
+                uint8_t routeCount = rt[0];
+                if ((uint16_t) used + 1 + (uint16_t) routeCount * MESH_ROUTE_ENTRY <= payloadLen) {
+                    Serial.print(F("MAP BEGIN "));
+                    Serial.print(origin);
+                    Serial.println(F(" 0"));
+                    for (uint8_t i = 0; i < routeCount; i++) {
+                        const uint8_t *e = rt + 1 + i * MESH_ROUTE_ENTRY;
+                        Serial.print(F("MAP R "));
+                        Serial.print(e[0]);
+                        Serial.print(' ');
+                        Serial.print(e[1]);
+                        Serial.print(' ');
+                        Serial.println(e[2]);
+                    }
+                    Serial.println(F("MAP END"));
+                }
             }
         }
         return;

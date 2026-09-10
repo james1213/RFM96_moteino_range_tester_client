@@ -151,6 +151,11 @@ void setupRadio() {
     radioOta->onMapCommand([](uint8_t queryId) {
         if (queryId == 0) {
             mesh->printMap();
+        } else if (queryId == 255) {
+            // Najpierw wlasny obraz, potem pytania do reszty - odpowiedzi dopisza
+            // sie same, kazda jako zrzut podpisany numerem swojego wezla.
+            mesh->printMap();
+            mesh->requestTopologyAll();
         } else if (!mesh->requestTopology(queryId)) {
             Serial.println(F("MAP | zapytanie odrzucone - brak trasy albo radio zajete"));
         }

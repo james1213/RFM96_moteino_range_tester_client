@@ -51,8 +51,20 @@
 // a odczyt to zwykle indeksowanie tablicy.
 #define MESH_MSG_BEACON       1
 #define MESH_MSG_DATA         2
-#define MESH_MSG_TOPO_REQ     3 // "przyslij liste swoich sasiadow"
-#define MESH_MSG_TOPO_RESP    4 // [liczba] potem 2 B na sasiada: [id][tlumienie dB]
+#define MESH_MSG_TOPO_REQ     3 // "opowiedz o sobie: sasiedzi i tablica tras"
+// Odpowiedz ma DWIE sekcje, jedna po drugiej:
+//   [liczba sasiadow] potem 2 B na sasiada: [id][tlumienie dB]
+//   [liczba tras]     potem 3 B na trase:   [cel][nastepny skok][koszt]
+// Sekcja tras jest tym, co pozwala odczytac CALA trase z jednego wezla przy PC:
+// routing jest skok po skoku, wiec zeby przejsc droge do konca, trzeba znac
+// nastepny skok kazdego posrednika. Najwiekszy rozmiar to 1+8+1+18 = 28 bajtow.
+#define MESH_MSG_TOPO_RESP    4
+#define MESH_ROUTE_ENTRY      3
+#define MESH_TOPO_REPORT_MAX  (1 + MESH_NEIGHBOR_ENTRY * MESH_MAX_NEIGHBORS \
+                               + 1 + MESH_ROUTE_ENTRY * MESH_MAX_ROUTES)
+// Odstep miedzy kolejnymi pytaniami przy odpytywaniu wszystkich wezlow po kolei.
+// Jedno pytanie naraz, bo warstwa radiowa ma jeden slot transakcji.
+#define MESH_WALK_GAP_MS      1500
 #define MESH_BEACON_HEADER    4
 #define MESH_BEACON_ROUTE_LEN 3
 #define MESH_DATA_HEADER      5
@@ -93,7 +105,8 @@ public:
     uint8_t getNextHop(uint8_t dest);              // 0 = brak trasy
     uint8_t getRouteMetric(uint8_t dest);          // MESH_METRIC_INFINITY = brak
     void printState();                             // jedna linia: sasiedzi, trasy, flagi (czarna skrzynka)
-    bool requestTopology(uint8_t dest);            // zapytaj wezel o jego sasiadow
+    bool requestTopology(uint8_t dest);            // zapytaj wezel o sasiadow i trasy
+    void requestTopologyAll();                     // odpytaj po kolei wszystkie znane wezly
     void printMap();                               // zrzut calej znanej mapy (format dla PC)
 
 private:
@@ -151,6 +164,10 @@ private:
     // Odpowiedz na zapytanie o topologie jest odkladana do petli glownej: przychodzi
     // w srodku obslugi odbioru, gdy slot transakcji ACK bywa zajety.
     uint8_t topoRespPendingTo = 0;
+    // Odpytywanie po kolei: indeks w tablicy tras i chwila nastepnego pytania.
+    bool walkActive = false;
+    uint8_t walkIndex = 0;
+    unsigned long walkNextAtMillis = 0;
     uint8_t pendingForward[RADIO_PAYLOAD_CAPACITY];
     uint8_t pendingForwardLen = 0;
     uint8_t pendingForwardHop = 0;
@@ -173,6 +190,8 @@ private:
     bool forwardData(uint8_t msgType, uint8_t origin, uint8_t finalDest, uint8_t ttl,
                      uint8_t flowId, const uint8_t *payload, uint8_t payloadLen);
     uint8_t buildNeighborList(uint8_t *out); // [liczba][id][tlumienie]... - zwraca dlugosc
+    uint8_t buildTopologyReport(uint8_t *out); // sasiedzi + tablica tras
+    void topologyWalkLoop();                 // kolejne pytania przy odpytywaniu wszystkich
     void addEdge(uint8_t a, uint8_t b, uint8_t pathLossDb);
     void ageEdges();
     Neighbor *findNeighbor(uint8_t id, bool create);
