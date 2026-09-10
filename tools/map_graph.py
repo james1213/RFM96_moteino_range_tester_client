@@ -6,7 +6,13 @@
     python map_graph.py log.txt --route 2:3              slad trasy z wezla 2 do 3
     python map_graph.py log.txt --svg mapa.svg --route 2:3
     python map_graph.py log.txt --dot                    Graphviz, jesli masz go zainstalowanego
+    python map_graph.py mapa.log --follow --route 1:3    rysunek odswiezany na zywo
     type COM.log | python map_graph.py - --svg mapa.svg
+
+Tryb --follow dopisuje obok pliku SVG male mapa.html, ktore samo przeladowuje
+obrazek co dwie sekundy. Otwierasz je raz w przegladarce i zostawiasz - mapa i
+trasa aktualizuja sie w miare, jak wezly odpowiadaja na kolejne komendy MAP.
+Log karmi sie skryptem map_poll.ps1 albo przekierowana konsola programatora.
 
 Rysunek jest generowany wprost do SVG - bez Graphviza i bez zadnej biblioteki
 spoza standardowego Pythona, bo na tej maszynie nie ma ani jednego, ani drugiego.
@@ -29,8 +35,10 @@ tablice routingu w lancuch. Czego brakuje, o tym powie wprost.
 """
 import argparse
 import math
+import os
 import re
 import sys
+import time
 
 # Linie z rejestratora bywaja poprzedzone znacznikiem czasu i prefiksem portu,
 # np. "12:31:02 [COM] | MAP E 1 3 108 4" - bierzemy wszystko od slowa MAP.
@@ -253,6 +261,88 @@ def as_dot(dumps, edges, route):
     return "\n".join(out)
 
 
+HTML_WRAPPER = """<!doctype html>
+<meta charset="utf-8">
+<title>Mapa sieci</title>
+<style>
+ body { margin: 0; background: #fbfbfb; font-family: "Segoe UI", sans-serif; }
+ img { display: block; max-width: 100%; }
+ #stan { position: fixed; right: 12px; top: 10px; font-size: 12px; color: #777; }
+</style>
+<div id="stan">czekam...</div>
+<img id="mapa" src="__SVG__">
+<script>
+// Przegladarka trzyma SVG w cache, wiec doklejamy znacznik czasu do adresu.
+setInterval(function () {
+  var img = document.getElementById("mapa");
+  img.src = "__SVG__?t=" + Date.now();
+  document.getElementById("stan").textContent =
+      "odswiezono " + new Date().toLocaleTimeString();
+}, 2000);
+</script>
+"""
+
+
+def write_outputs(dumps, edges, route, svg_path):
+    """Zapisuje rysunek i - przy pierwszym wywolaniu - opakowanie HTML obok niego."""
+    with open(svg_path, "w", encoding="utf-8") as f:
+        f.write(as_svg(dumps, edges, route))
+    stem = svg_path[:-4] if svg_path.lower().endswith(".svg") else svg_path
+    html_path = stem + ".html"
+    if not os.path.exists(html_path):
+        name = os.path.basename(svg_path)
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(HTML_WRAPPER.replace("__SVG__", name))
+        print("Zapisano %s - otworz je w przegladarce i zostaw otwarte." % html_path)
+
+
+def follow(log_path, svg_path, route, poll_seconds=1.0, keep_bytes=400000):
+    """Czyta log w miare, jak rosnie, i przerysowuje mape po kazdej porcji linii MAP.
+
+    Czytamy binarnie i pilnujemy przesuniecia w bajtach, bo plik jest w tym czasie
+    dopisywany przez inny proces. Gdy zmaleje (rejestrator wystartowal od nowa),
+    zaczynamy od poczatku.
+    """
+    text = ""
+    offset = 0
+    print("Sledze %s - przerwij Ctrl+C" % log_path)
+    while True:
+        try:
+            size = os.path.getsize(log_path)
+        except OSError:
+            time.sleep(poll_seconds)
+            continue
+        if size < offset:
+            text, offset = "", 0
+        if size > offset:
+            with open(log_path, "rb") as f:
+                f.seek(offset)
+                chunk = f.read()
+                offset = f.tell()
+            text += chunk.decode("utf-8", errors="replace")
+            if len(text) > keep_bytes:
+                # Zostawiamy ogon na granicy linii - starsze zrzuty i tak sa
+                # zastepowane przez nowsze.
+                text = text[-keep_bytes:]
+                text = text[text.find(chr(10)) + 1:]
+            if "MAP" in chunk.decode("utf-8", errors="replace"):
+                dumps, edges = parse(text)
+                if dumps or edges:
+                    write_outputs(dumps, edges, route, svg_path)
+                    line = "%s  wezly ze zrzutem: %s" % (
+                        time.strftime("%H:%M:%S"),
+                        ", ".join(str(n) for n in sorted(dumps)) or "brak")
+                    if route:
+                        path, why = trace(dumps, route[0], route[1])
+                        line += "   trasa %d->%d: %s%s" % (
+                            route[0], route[1], " -> ".join(str(n) for n in path),
+                            "" if why else "")
+                        if why:
+                            line += "  (" + why + ")"
+                    print(line)
+        time.sleep(poll_seconds)
+
+
 def parse_route(value):
     try:
         src, dst = value.split(":")
@@ -268,7 +358,19 @@ def main():
     ap.add_argument("--dot", action="store_true", help="wypisz graf w formacie Graphviz")
     ap.add_argument("--route", type=parse_route, metavar="A:B",
                     help="podswietl trase z wezla A do wezla B")
+    ap.add_argument("--follow", action="store_true",
+                    help="sledz rosnacy log i przerysowuj mape na biezaco")
     args = ap.parse_args()
+
+    if args.follow:
+        if args.log == "-":
+            ap.error("--follow potrzebuje pliku, nie standardowego wejscia")
+        svg_path = args.svg or "mapa.svg"
+        try:
+            follow(args.log, svg_path, args.route)
+        except KeyboardInterrupt:
+            print("\nkoniec")
+        return 0
 
     text = sys.stdin.read() if args.log == "-" else open(args.log, encoding="utf-8",
                                                          errors="replace").read()
@@ -278,8 +380,7 @@ def main():
         return 1
 
     if args.svg:
-        with open(args.svg, "w", encoding="utf-8") as f:
-            f.write(as_svg(dumps, edges, args.route))
+        write_outputs(dumps, edges, args.route, args.svg)
         print("Zapisano %s - otworz dwuklikiem w przegladarce." % args.svg)
     if args.dot:
         print(as_dot(dumps, edges, args.route))
