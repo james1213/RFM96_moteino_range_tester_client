@@ -13,7 +13,9 @@
 
 #include <mesh/MeshRouter.h>
 
+#ifndef NODE_ID
 #define NODE_ID 0x01
+#endif
 
 // ==================== MOC NADAJNIKA ====================
 // Zakres 2..20 dBm (wyjscie PA_BOOST - jedyne podlaczone do anteny w modulach RFM95/96).
@@ -37,12 +39,16 @@
 // dlatego, ze sygnal jest ZA MOCNY, a eskalacja APC "brak ACK -> pelna moc"
 // pogarsza sprawe (widziane na sprzecie jako spirala strat przy [P18-P20]).
 // W terenie: TX_POWER_DBM 20 i APC_CEILING_DBM 20.
+#ifndef TX_POWER_DBM
 #define TX_POWER_DBM 2
+#endif
 
 // Sufit automatycznej eskalacji APC (skok przy stratach ACK i na czas transferu OTA).
 // UWAGA: przy zasilaniu z pinu 3V3 FTDI ustaw najwyzej TX_POWER_FTDI_SAFE_DBM (10) -
 // inaczej automat sam, bez udzialu TX_POWER_DBM, wpedzi plytke w petle brown-outow.
+#ifndef APC_CEILING_DBM
 #define APC_CEILING_DBM 2
+#endif
 
 #if TX_POWER_DBM < TX_POWER_MIN_DBM || TX_POWER_DBM > TX_POWER_MAX_DBM
 #error "TX_POWER_DBM poza zakresem - dozwolone 2..20 dBm (PA_BOOST)"
@@ -78,7 +84,9 @@ RadioManager *manager = new RadioManager();
 RadioOta *radioOta = new RadioOta(manager);
 MeshRouter *mesh = new MeshRouter(manager);
 
+#ifndef OLED_I2C_ADDRESS
 #define OLED_I2C_ADDRESS 0x3C
+#endif
 SSD1306AsciiAvrI2c oled;
 bool oledPresent = false;
 

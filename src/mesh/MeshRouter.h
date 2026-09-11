@@ -25,19 +25,48 @@
 #include <Arduino.h>
 #include <radiomanager/RadioManager.h>
 
+// ============ CO MOZNA USTAWIC Z platformio.ini (build_flags) ============
+// Stale osloniete ponizej #ifndef to LOKALNA POLITYKA WEZLA: rozmiary tablic,
+// czasy, progi, moc. Wolno je nadpisac per projekt, np. -DMESH_MAX_NEIGHBORS=8,
+// i wolno, zeby rozne wezly mialy je rozne - nikt poza wlasnym wezlem ich nie
+// oglada.
+//
+// Stale BEZ oslony opisuja FORMAT RAMKI: naglowek radiowy, typy wiadomosci,
+// rozmiary naglowkow mesh. Musza byc identyczne na wszystkich wezlach, bo wezel
+// o innej wartosci przestaje rozumiec ramki sasiadow. Dlatego celowo nie da sie
+// ich podmienic z pliku projektu - zmienia sie je tutaj, dla calej sieci naraz.
+
+#ifndef MESH_BEACON_INTERVAL_MS
 #define MESH_BEACON_INTERVAL_MS   3000  // + jitter 0-511 ms, zeby beacony sie nie zderzaly
+#endif
+#ifndef MESH_NEIGHBOR_TIMEOUT_MS
 #define MESH_NEIGHBOR_TIMEOUT_MS  12000 // prawdziwa CISZA (zadnych ramek) = sasiad znikl;
                                         // same zgubione beacony tras nie usmiercaja
+#endif
+#ifndef MESH_MAX_NEIGHBORS
 #define MESH_MAX_NEIGHBORS        4
+#endif
+#ifndef MESH_MAX_ROUTES
 #define MESH_MAX_ROUTES           6
+#endif
+#ifndef MESH_DEDUP_SIZE
 #define MESH_DEDUP_SIZE           16 // musi pokryc horyzont retransmisji (~3 s watchdoga ACK)
+#endif
 
 #define MESH_MAX_TTL              4     // max skokow; dobija ramki, ktore ucieka dedupowi
+#ifndef MESH_HOP_RETRIES
 #define MESH_HOP_RETRIES          2     // ponowienia jednego skoku (po ACK-timeoucie radia)
+#endif
 #define MESH_METRIC_INFINITY      255
+#ifndef MESH_ROUTE_SWITCH_MARGIN
 #define MESH_ROUTE_SWITCH_MARGIN  2     // histereza: nowa trasa musi byc lepsza o tyle
+#endif
+#ifndef MESH_LINK_GOOD_PATHLOSS
 #define MESH_LINK_GOOD_PATHLOSS   70    // dB; do tego tlumienia lacze kosztuje bazowe 4
+#endif
+#ifndef MESH_LINK_COST_BASE
 #define MESH_LINK_COST_BASE       4     // koszt idealnego skoku (premiuje mniej skokow)
+#endif
 
 // ==================== BINARNY FORMAT WIADOMOSCI MESH ====================
 // Tresc ramki radiowej typu RADIO_TYPE_MESH zaczyna sie bajtem rodzaju.
@@ -64,7 +93,9 @@
                                + 1 + MESH_ROUTE_ENTRY * MESH_MAX_ROUTES)
 // Odstep miedzy kolejnymi pytaniami przy odpytywaniu wszystkich wezlow po kolei.
 // Jedno pytanie naraz, bo warstwa radiowa ma jeden slot transakcji.
+#ifndef MESH_WALK_GAP_MS
 #define MESH_WALK_GAP_MS      1500
+#endif
 #define MESH_BEACON_HEADER    4
 #define MESH_BEACON_ROUTE_LEN 3
 #define MESH_DATA_HEADER      5
@@ -81,8 +112,12 @@
 // trasa z tablicy routingu, a odpowiedz wraca ta sama droga i laduje w tablicy
 // krawedzi. Wezel przy PC jest wiec kolektorem: "MAP" zrzuca to, co wie, a
 // "MAP <id>" dopytuje wskazany wezel.
+#ifndef MESH_MAX_EDGES
 #define MESH_MAX_EDGES        10
+#endif
+#ifndef MESH_EDGE_TIMEOUT_MS
 #define MESH_EDGE_TIMEOUT_MS  60000 // krawedz nieodswiezona przez minute znika z mapy
+#endif
 
 // Tresc dostarczona przez mesh: wskaznik w bufor odbiorczy radia (zakonczony
 // zerem, wiec nadaje sie wprost na C-string), dlugosc i WEZEL ZRODLOWY - nie

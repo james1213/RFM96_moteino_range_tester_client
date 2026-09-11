@@ -12,7 +12,20 @@
 
 
 
+// ============ CO MOZNA USTAWIC Z platformio.ini (build_flags) ============
+// Stale osloniete ponizej #ifndef to LOKALNA POLITYKA WEZLA: rozmiary tablic,
+// czasy, progi, moc. Wolno je nadpisac per projekt, np. -DMESH_MAX_NEIGHBORS=8,
+// i wolno, zeby rozne wezly mialy je rozne - nikt poza wlasnym wezlem ich nie
+// oglada.
+//
+// Stale BEZ oslony opisuja FORMAT RAMKI: naglowek radiowy, typy wiadomosci,
+// rozmiary naglowkow mesh. Musza byc identyczne na wszystkich wezlach, bo wezel
+// o innej wartosci przestaje rozumiec ramki sasiadow. Dlatego celowo nie da sie
+// ich podmienic z pliku projektu - zmienia sie je tutaj, dla calej sieci naraz.
+
+#ifndef LOG_ACTIVE
 #define LOG_ACTIVE false
+#endif
 
 // Adres rozgloszeniowy: ramka do 255 jest przyjmowana przez KAZDY wezel (mesh
 // uzywa go do beaconow topologii). Broadcasty ida bez ACK - nie ma jednego adresata.
@@ -60,7 +73,9 @@
 // przyjsc kolejna ramka do skwitowania. Z jednym gniazdem pierwsze potwierdzenie
 // przepadalo bezgłośnie: nadawca odliczal timeout, a mesh uniewaznial trasy
 // przez zywego sasiada.
+#ifndef RADIO_ACK_QUEUE_LEN
 #define RADIO_ACK_QUEUE_LEN 3
+#endif
 
 // Moc nadawania RFM95/96: uzywamy wyjscia PA_BOOST, bo tylko ono jest podlaczone
 // do anteny w modulach HopeRF (wyjscie RFO zostaje niepodlaczone - dalo by ~zero mocy).
@@ -68,32 +83,52 @@
 // progu OCP - biblioteka ustawia tam 140 mA, co przycina PA przy 20 dBm.
 #define TX_POWER_MIN_DBM        2   // minimum dla PA_BOOST
 #define TX_POWER_MAX_DBM        20  // maksimum SX1276 (tryb PA_DAC)
+#ifndef TX_POWER_FTDI_SAFE_DBM
 #define TX_POWER_FTDI_SAFE_DBM  10  // powyzej tego zasilanie z pinu 3V3 FTDI nie wyrabia
+#endif
 #define TX_OCP_HIGH_POWER_MA    150 // limit pradu PA dla trybu >17 dBm (Semtech 5.4.3)
 
 // Nasluch kanalu przed nadaniem (CSMA na RSSI chwilowym). Podloga szumu SX1276
 // przy SF7/125 kHz to ok. -110..-120 dBm; ramka sasiada z biurka to -20..-60 dBm.
+#ifndef CS_BUSY_RSSI_DBM
 #define CS_BUSY_RSSI_DBM  (-85)
+#endif
+#ifndef CS_MAX_WAIT_MS
 #define CS_MAX_WAIT_MS    400
+#endif
 
 // Dioda aktywnosci: swieci stale, a przy kazdym nadaniu i kazdym odebranym
 // pakiecie gasnie na tyle milisekund. 40 ms to najkrotsze wyraznie widoczne
 // mrugniecie - krotsze oko zlewa z ciaglym swieceniem.
+#ifndef RADIO_ACTIVITY_LED_OFF_MS
 #define RADIO_ACTIVITY_LED_OFF_MS 40
+#endif
 
 // ==================== AUTOMATYCZNA REGULACJA MOCY (APC) ====================
 // Kazdy ACK niesie RSSI, z jakim odbiorca uslyszal kwitowana ramke. Nadawca
 // reguluje SWOJA moc tak, by u odbiorcy trafic w okno APC_TARGET_RSSI_DBM +-
 // APC_HYSTERESIS_DB. Dwie niezalezne petle (po jednej na kierunek) - bez
 // zalozenia symetrii lacza, wiec bez sprzezenia regulatorow.
+#ifndef APC_ENABLED
 #define APC_ENABLED           true
+#endif
+#ifndef APC_TARGET_RSSI_DBM
 #define APC_TARGET_RSSI_DBM   (-85) // cel: tak ma nas slyszec druga strona
+#endif
+#ifndef APC_HYSTERESIS_DB
 #define APC_HYSTERESIS_DB     5     // martwa strefa; RSSI i tak skacze o +-kilka dB
+#endif
+#ifndef APC_STEP_DB
 #define APC_STEP_DB           2     // krok pojedynczej korekty
+#endif
+#ifndef APC_ACK_MISS_LIMIT
 #define APC_ACK_MISS_LIMIT    3     // tyle timeoutow ACK z rzedu -> sonda mocy w gore
+#endif
 // Sufit eskalacji. UWAGA na zasilanie: przy 3V3 z FTDI ustaw TX_POWER_FTDI_SAFE_DBM,
 // inaczej automatyczny skok mocy przy slabym laczu wpedzi wezel w petle brown-outow.
+#ifndef APC_MAX_DBM
 #define APC_MAX_DBM           TX_POWER_MAX_DBM
+#endif
 
 // Callback bledu dostaje ramke, ktora nie doczekala sie ACK - to wciaz ta sama
 // pamiec w buforze nadawczym, wiec nie ma tu zadnej kopii.
