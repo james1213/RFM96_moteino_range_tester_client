@@ -42,7 +42,7 @@
 // Sufit automatycznej eskalacji APC (skok przy stratach ACK i na czas transferu OTA).
 // UWAGA: przy zasilaniu z pinu 3V3 FTDI ustaw najwyzej TX_POWER_FTDI_SAFE_DBM (10) -
 // inaczej automat sam, bez udzialu TX_POWER_DBM, wpedzi plytke w petle brown-outow.
-#define APC_CEILING_DBM 4
+#define APC_CEILING_DBM 2
 
 #if TX_POWER_DBM < TX_POWER_MIN_DBM || TX_POWER_DBM > TX_POWER_MAX_DBM
 #error "TX_POWER_DBM poza zakresem - dozwolone 2..20 dBm (PA_BOOST)"
@@ -173,6 +173,9 @@ void setupRadio() {
                             manager->txDone();
                         });
 
+    // Dioda Moteino (D9 w wariancie tej plytki - NIE D13, tam jest SCK radia):
+    // swieci stale, gasnie na chwile przy kazdym nadaniu i odbiorze.
+    manager->setActivityLed(LED_BUILTIN);
     manager->setTxPower(TX_POWER_DBM);
     manager->setApcMaxPower(APC_CEILING_DBM);
     manager->printTxPower();

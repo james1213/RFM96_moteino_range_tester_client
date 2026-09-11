@@ -91,6 +91,33 @@ void RadioManager::loop() {
     sendLoop();
     waitForAckTimeoutLoop();
     txStuckWatchdogLoop();
+    activityLedLoop();
+}
+
+void RadioManager::setActivityLed(int8_t pin) {
+    activityLedPin = pin;
+    activityLedOff = false;
+    if (pin < 0) return;
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, HIGH);
+}
+
+// Kolejne zdarzenie w trakcie mrugniecia wydluza zgaszenie od nowa, zamiast
+// zapalac diode posrodku serii - przy gestym ruchu (dane, ACK, beacon jeden
+// po drugim) widac jedno dluzsze mrugniecie zamiast migotania.
+void RadioManager::activityBlink() {
+    if (activityLedPin < 0) return;
+    digitalWrite(activityLedPin, LOW);
+    activityLedOff = true;
+    activityLedOffAt = millis();
+}
+
+void RadioManager::activityLedLoop() {
+    if (!activityLedOff) return;
+    if (millis() - activityLedOffAt >= RADIO_ACTIVITY_LED_OFF_MS) {
+        digitalWrite(activityLedPin, HIGH);
+        activityLedOff = false;
+    }
 }
 
 // Awaryjne odblokowanie nadajnika: gdyby przerwanie TxDone przepadlo (wyscig w
@@ -203,6 +230,7 @@ void RadioManager::receiveLoop() {
     }
     if (!receivedFlag) return;
     receivedFlag = false;
+    activityBlink(); // kazdy uslyszany pakiet, takze cudzy - tester pokazuje, ze eter zyje
     if (!readReceivedFrame()) return;
 
     // KAZDA poprawnie zaadresowana ramka (dane, ACK, beacon) jest dowodem, ze
@@ -616,6 +644,7 @@ bool RadioManager::startSending(const uint8_t *payload, uint8_t len, uint8_t add
     transmissionClenedUp = false;
     sendingTime = micros();
     txStartMillis = millis();
+    activityBlink(); // ramka jest w FIFO, nadawanie na pewno rusza
     LoRa.endPacket(true);
     return true;
 }

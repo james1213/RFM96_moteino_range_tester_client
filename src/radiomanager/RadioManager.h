@@ -76,6 +76,11 @@
 #define CS_BUSY_RSSI_DBM  (-85)
 #define CS_MAX_WAIT_MS    400
 
+// Dioda aktywnosci: swieci stale, a przy kazdym nadaniu i kazdym odebranym
+// pakiecie gasnie na tyle milisekund. 40 ms to najkrotsze wyraznie widoczne
+// mrugniecie - krotsze oko zlewa z ciaglym swieceniem.
+#define RADIO_ACTIVITY_LED_OFF_MS 40
+
 // ==================== AUTOMATYCZNA REGULACJA MOCY (APC) ====================
 // Kazdy ACK niesie RSSI, z jakim odbiorca uslyszal kwitowana ramke. Nadawca
 // reguluje SWOJA moc tak, by u odbiorcy trafic w okno APC_TARGET_RSSI_DBM +-
@@ -174,6 +179,16 @@ public:
     // Nasluch kanalu przed nadaniem (CSMA): jesli RSSI chwilowe przekracza prog,
     // ktos wlasnie nadaje - odkladamy ramke o obieg petli, najdluzej CS_MAX_WAIT_MS.
     unsigned long csBusySinceMillis = 0;
+
+    // Dioda aktywnosci radia (-1 = brak). Sterowana wylacznie z petli glownej:
+    // przerwania TxDone/RxDone tylko ustawiaja flagi, a zgaszenie i ponowne
+    // zapalenie dzieje sie w startSending, receiveLoop i activityLedLoop.
+    int8_t activityLedPin = -1;
+    bool activityLedOff = false;
+    unsigned long activityLedOffAt = 0;
+    void setActivityLed(int8_t pin);     // zapala diode na stale i wlacza mruganie
+    void activityBlink();                // gasi diode na RADIO_ACTIVITY_LED_OFF_MS
+    void activityLedLoop();              // zapala ja z powrotem, gdy czas minie
 
     // ==================== SKLADANIE RAMKI BEZ KOPII ====================
     // Wzorzec dla kazdego, kto chce cos nadac:
