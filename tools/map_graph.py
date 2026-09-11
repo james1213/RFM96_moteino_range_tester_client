@@ -7,11 +7,21 @@
     python map_graph.py log.txt --svg mapa.svg --route 2:3
     python map_graph.py log.txt --dot                    Graphviz, jesli masz go zainstalowanego
     python map_graph.py mapa.log --follow --route 1:3    rysunek odswiezany na zywo
+    python map_graph.py mapa.log --follow --html C:/mapy/siec.html
+    python map_graph.py mapa.log --svg D:/dane/siec.svg --html C:/mapy/siec.html
     type COM.log | python map_graph.py - --svg mapa.svg
 
-Tryb --follow dopisuje obok pliku SVG male mapa.html, ktore samo przeladowuje
-obrazek co dwie sekundy. Otwierasz je raz w przegladarce i zostawiasz - mapa i
-trasa aktualizuja sie w miare, jak wezly odpowiadaja na kolejne komendy MAP.
+Obok rysunku powstaje mala strona HTML, ktora sama przeladowuje obrazek co dwie
+sekundy. Otwierasz ja raz w przegladarce i zostawiasz - mapa i trasa aktualizuja
+sie w miare, jak wezly odpowiadaja na kolejne komendy MAP.
+
+Gdzie trafiaja pliki:
+    tylko --svg        strona obok rysunku, z ta sama nazwa i rozszerzeniem .html
+    tylko --html       rysunek obok strony, z ta sama nazwa i rozszerzeniem .svg
+    oba                kazdy tam, gdzie wskazano; strona sama trafi do rysunku
+    zadne (--follow)   mapa.svg i mapa.html w biezacym katalogu
+Brakujace katalogi sa zakladane. Strona jest zapisywana na nowo przy kazdym
+uruchomieniu, wiec zawsze wskazuje aktualny rysunek.
 Log karmi sie skryptem map_poll.ps1 albo przekierowana konsola programatora.
 
 Rysunek jest generowany wprost do SVG - bez Graphviza i bez zadnej biblioteki
@@ -37,9 +47,11 @@ Czego brakuje, o tym powie wprost - poda numer wezla bez zrzutu.
 import argparse
 import math
 import os
+import pathlib
 import re
 import sys
 import time
+import urllib.parse
 
 # Linie z rejestratora bywaja poprzedzone znacznikiem czasu i prefiksem portu,
 # np. "12:31:02 [COM] | MAP E 1 3 108 4" - bierzemy wszystko od slowa MAP.
@@ -284,20 +296,52 @@ setInterval(function () {
 """
 
 
-def write_outputs(dumps, edges, route, svg_path):
-    """Zapisuje rysunek i - przy pierwszym wywolaniu - opakowanie HTML obok niego."""
+def resolve_outputs(svg, html):
+    """Ustala pelne sciezki rysunku i strony. Podana jedna wyznacza druga obok siebie."""
+    if svg and not html:
+        stem = svg[:-4] if svg.lower().endswith(".svg") else svg
+        html = stem + ".html"
+    elif html and not svg:
+        stem = html[:-5] if html.lower().endswith(".html") else html
+        svg = stem + ".svg"
+    elif not svg and not html:
+        svg, html = "mapa.svg", "mapa.html"
+    return os.path.abspath(svg), os.path.abspath(html)
+
+
+def svg_reference(svg_path, html_path):
+    """Adres rysunku widziany ze strony.
+
+    Wzgledny, jesli tylko sie da - wtedy katalog z oboma plikami mozna przeniesc
+    w calosci i dalej dziala. Na Windowsie nie ma sciezki wzglednej miedzy dwoma
+    dyskami (np. C: i Z:), wiec wtedy pelny adres file://. Znaki spoza ASCII
+    i spacje sa kodowane, bo trafiaja do atrybutu src.
+    """
+    try:
+        rel = os.path.relpath(svg_path, os.path.dirname(html_path))
+    except ValueError:
+        return pathlib.Path(svg_path).as_uri()
+    return urllib.parse.quote(rel.replace(os.sep, "/"))
+
+
+def write_svg(dumps, edges, route, svg_path):
+    os.makedirs(os.path.dirname(svg_path), exist_ok=True)
     with open(svg_path, "w", encoding="utf-8") as f:
         f.write(as_svg(dumps, edges, route))
-    stem = svg_path[:-4] if svg_path.lower().endswith(".svg") else svg_path
-    html_path = stem + ".html"
-    if not os.path.exists(html_path):
-        name = os.path.basename(svg_path)
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(HTML_WRAPPER.replace("__SVG__", name))
-        print("Zapisano %s - otworz je w przegladarce i zostaw otwarte." % html_path)
 
 
-def follow(log_path, svg_path, route, poll_seconds=1.0, keep_bytes=400000):
+def write_html(svg_path, html_path):
+    """Strona zapisywana raz na uruchomienie - przerysowania dotycza tylko SVG,
+    a otwarta karta sama przeladowuje obrazek."""
+    os.makedirs(os.path.dirname(html_path), exist_ok=True)
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(HTML_WRAPPER.replace("__SVG__", svg_reference(svg_path, html_path)))
+    print("Strona:  %s" % html_path)
+    print("Rysunek: %s" % svg_path)
+    print("Otworz strone w przegladarce i zostaw karte otwarta.")
+
+
+def follow(log_path, svg_path, html_path, route, poll_seconds=1.0, keep_bytes=400000):
     """Czyta log w miare, jak rosnie, i przerysowuje mape po kazdej porcji linii MAP.
 
     Czytamy binarnie i pilnujemy przesuniecia w bajtach, bo plik jest w tym czasie
@@ -307,6 +351,7 @@ def follow(log_path, svg_path, route, poll_seconds=1.0, keep_bytes=400000):
     """
     text = ""
     offset = 0
+    html_written = False
     print("Sledze %s - przerwij Ctrl+C" % log_path)
     while True:
         try:
@@ -337,7 +382,10 @@ def follow(log_path, svg_path, route, poll_seconds=1.0, keep_bytes=400000):
             if "MAP" in chunk.decode("utf-8", errors="replace"):
                 dumps, edges = parse(text)
                 if dumps or edges:
-                    write_outputs(dumps, edges, route, svg_path)
+                    write_svg(dumps, edges, route, svg_path)
+                    if not html_written:
+                        write_html(svg_path, html_path)
+                        html_written = True
                     line = "%s  wezly ze zrzutem: %s" % (
                         time.strftime("%H:%M:%S"),
                         ", ".join(str(n) for n in sorted(dumps)) or "brak")
@@ -364,6 +412,8 @@ def main():
     ap = argparse.ArgumentParser(description="Rysuje mape sieci i slad trasy ze zrzutow MAP.")
     ap.add_argument("log", help="plik z logiem serialowym albo - dla standardowego wejscia")
     ap.add_argument("--svg", metavar="PLIK", help="zapisz rysunek SVG (bez zadnych zaleznosci)")
+    ap.add_argument("--html", metavar="PLIK",
+                    help="gdzie zapisac strone odswiezajaca rysunek; domyslnie obok SVG")
     ap.add_argument("--dot", action="store_true", help="wypisz graf w formacie Graphviz")
     ap.add_argument("--route", type=parse_route, metavar="A:B",
                     help="podswietl trase z wezla A do wezla B")
@@ -374,9 +424,9 @@ def main():
     if args.follow:
         if args.log == "-":
             ap.error("--follow potrzebuje pliku, nie standardowego wejscia")
-        svg_path = args.svg or "mapa.svg"
+        svg_path, html_path = resolve_outputs(args.svg, args.html)
         try:
-            follow(args.log, svg_path, args.route)
+            follow(args.log, svg_path, html_path, args.route)
         except KeyboardInterrupt:
             print("\nkoniec")
         return 0
@@ -388,12 +438,14 @@ def main():
         print("Nie znalazlem zadnego zrzutu mapy. Wpisz MAP na konsoli wezla.")
         return 1
 
-    if args.svg:
-        write_outputs(dumps, edges, args.route, args.svg)
-        print("Zapisano %s - otworz dwuklikiem w przegladarce." % args.svg)
+    drawing = bool(args.svg or args.html)
+    if drawing:
+        svg_path, html_path = resolve_outputs(args.svg, args.html)
+        write_svg(dumps, edges, args.route, svg_path)
+        write_html(svg_path, html_path)
     if args.dot:
         print(as_dot(dumps, edges, args.route))
-    if not args.svg and not args.dot:
+    if not drawing and not args.dot:
         print(as_text(dumps, edges, args.route))
     return 0
 
