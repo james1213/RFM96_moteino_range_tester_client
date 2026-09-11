@@ -42,7 +42,7 @@
 // Sufit automatycznej eskalacji APC (skok przy stratach ACK i na czas transferu OTA).
 // UWAGA: przy zasilaniu z pinu 3V3 FTDI ustaw najwyzej TX_POWER_FTDI_SAFE_DBM (10) -
 // inaczej automat sam, bez udzialu TX_POWER_DBM, wpedzi plytke w petle brown-outow.
-#define APC_CEILING_DBM 10
+#define APC_CEILING_DBM 4
 
 #if TX_POWER_DBM < TX_POWER_MIN_DBM || TX_POWER_DBM > TX_POWER_MAX_DBM
 #error "TX_POWER_DBM poza zakresem - dozwolone 2..20 dBm (PA_BOOST)"
@@ -124,7 +124,7 @@ void setup() {
     // DIAG (stk=) odczytuje pozniej najmniejszy zapas stosu, jaki kiedykolwiek wystapil.
     RadioManager::paintFreeStack();
     setupSerial();
-    Serial.println(F("ver. 1.1"));
+    Serial.println(F("ver. 1.8"));
     printResetCause();
     setupRadio();
     setupFlash();
@@ -352,7 +352,7 @@ void loop() {
         n += appendNumber(payload + n, count++);
         n += appendFlash(payload + n, PSTR("][P")); // znacznik APC: moc tej wiadomosci
         n += appendNumber(payload + n, manager->getEffectiveTxPower());
-        n += appendFlash(payload + n, PSTR("] with ACK | test string 1234567890ABCDEFGHIJKLMNOP"));
+        n += appendFlash(payload + n, PSTR("] with ACK"));
         payload[n] = 0;
         Serial.print(F("Sending payload: \""));
         Serial.print(payload);
