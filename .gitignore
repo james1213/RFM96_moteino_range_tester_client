@@ -35,3 +35,7 @@
 
 # Konfiguracja IDE i cache SonarLinta - stan lokalny tej maszyny
 .idea/
+
+# Pamiec podreczna Pythona - powstaje przy kazdym imporcie albo kompilacji skryptu
+__pycache__/
+*.pyc
