@@ -27,16 +27,14 @@ void RadioManager::setupRadio(long frequency, int ss, int reset, int dio0, uint8
     LoRa.setSpreadingFactor(RADIO_SPREADING_FACTOR);
     LoRa.setSignalBandwidth(RADIO_BANDWIDTH_HZ);
     LoRa.setCodingRate4(RADIO_CODING_RATE_DENOM);
+    // Stale sklejone w jeden napis juz przy kompilacji: dziesiec osobnych print()
+    // kosztowalo 190 B flash. Czestotliwosc drukowana z parametru, zeby log
+    // pokazywal to, co naprawde trafilo do radia.
     Serial.print(F("[RADIO] "));
     Serial.print(frequency);
-    Serial.print(F(" Hz SF"));
-    Serial.print(RADIO_SPREADING_FACTOR);
-    Serial.print(F(" BW"));
-    Serial.print(RADIO_BANDWIDTH_HZ);
-    Serial.print(F(" CR4/"));
-    Serial.print(RADIO_CODING_RATE_DENOM);
-    Serial.print(F(" ackTimeout="));
-    Serial.println(RADIO_ACK_TIMEOUT_MS);
+    Serial.print(F(" Hz SF" RADIO_STR(RADIO_SPREADING_FACTOR) " BW" RADIO_STR(RADIO_BANDWIDTH_HZ)
+                   " CR4/" RADIO_STR(RADIO_CODING_RATE_DENOM) " ackTimeout="));
+    Serial.println(ackTimeout);
     // enableCrc() musi byc PO begin() - begin() resetuje modul i czysci ten bit
     LoRa.enableCrc();
     LoRa.onReceive(receiveDoneCallback);

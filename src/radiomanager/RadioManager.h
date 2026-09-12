@@ -92,20 +92,20 @@
 // Czestotliwosc, SF, BW i CR musza byc IDENTYCZNE na wszystkich wezlach - wezel
 // z innym zestawem w ogole nie slyszy reszty. Osloniete #ifndef tylko po to, zeby
 // dalo sie je przetestowac z platformio.ini; zmieniaj je wtedy w obu projektach
-// naraz. Wartosci podawaj jako liczby calkowite (434000000L, nie 434E6), bo
+// naraz. Wartosci podawaj jako liczby calkowite (434000000, nie 434E6), bo
 // sprawdzenia ponizej liczy preprocesor.
 //
 // SF7 / BW 500 kHz: ramka 4x krotsza niz przy 125 kHz (dane 52 B: 26 ms zamiast
 // 103 ms), czulosc -116 dBm zamiast -123 dBm - zasieg mniejszy o ~40%. Wymiana
 // na pojemnosc sieci: przy limicie 30% zajetosci kanalu ~20 wezlow zamiast ~6.
 #ifndef RADIO_FREQUENCY_HZ
-#define RADIO_FREQUENCY_HZ      434000000L // srodek pasma ISM 433,05-434,79 MHz
+#define RADIO_FREQUENCY_HZ      434000000  // srodek pasma ISM 433,05-434,79 MHz
 #endif
 #ifndef RADIO_SPREADING_FACTOR
 #define RADIO_SPREADING_FACTOR  7
 #endif
 #ifndef RADIO_BANDWIDTH_HZ
-#define RADIO_BANDWIDTH_HZ      500000L
+#define RADIO_BANDWIDTH_HZ      500000
 #endif
 #ifndef RADIO_CODING_RATE_DENOM
 #define RADIO_CODING_RATE_DENOM 5          // CR 4/5
@@ -120,7 +120,7 @@
  && RADIO_BANDWIDTH_HZ != 20800L && RADIO_BANDWIDTH_HZ != 31250L && RADIO_BANDWIDTH_HZ != 41700L \
  && RADIO_BANDWIDTH_HZ != 62500L && RADIO_BANDWIDTH_HZ != 125000L && RADIO_BANDWIDTH_HZ != 250000L \
  && RADIO_BANDWIDTH_HZ != 500000L
-#error "RADIO_BANDWIDTH_HZ: dozwolone 7800..500000 wg SX1276 (np. 125000L, 250000L, 500000L)"
+#error "RADIO_BANDWIDTH_HZ: dozwolone 7800..500000 wg SX1276 (np. 125000, 250000, 500000)"
 #endif
 #if RADIO_CODING_RATE_DENOM < 5 || RADIO_CODING_RATE_DENOM > 8
 #error "RADIO_CODING_RATE_DENOM: 5..8 (CR 4/5..4/8)"
@@ -138,6 +138,10 @@
 // 50). Z niego wynikaja wszystkie czasy oczekiwania ponizej, wiec zmiana SF albo
 // BW nie wymaga recznego przestrajania timeoutow.
 #define RADIO_MAX_FRAME_MS ((200000UL << RADIO_SPREADING_FACTOR) / RADIO_BANDWIDTH_HZ)
+
+// Zamiana wartosci stalej na napis (dwa poziomy, zeby rozwinac makro przed #).
+#define RADIO_STR_(x) #x
+#define RADIO_STR(x)  RADIO_STR_(x)
 
 // Czas oczekiwania na ACK: nasza ramka + odlozenie odpowiedzi przez nasluch
 // kanalu + sama ramka ACK + obieg petli u odbiorcy. SF7/125: 1070 ms (bylo 1000),

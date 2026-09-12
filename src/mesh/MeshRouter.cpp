@@ -5,7 +5,6 @@ MeshRouter *MeshRouter::instance = nullptr;
 MeshRouter::MeshRouter(RadioManager *manager) {
     this->manager = manager;
     instance = this;
-    for (auto &r : routes) r.metric = MESH_METRIC_INFINITY;
 }
 
 void MeshRouter::onDataReceived(MeshDataCallback callback) {
@@ -140,6 +139,9 @@ MeshRouter::Neighbor *MeshRouter::findNeighbor(uint8_t id, bool create) {
 }
 
 MeshRouter::Route *MeshRouter::findRoute(uint8_t dest, bool create) {
+    // 0 znaczy "wolny wpis", nigdy cel trasy. Bez tego pytanie o cel 0 trafialoby
+    // w pierwszy wolny slot - a wolne sloty maja metric 0, nie nieskonczonosc.
+    if (dest == 0) return nullptr;
     Route *freeSlot = nullptr;
     Route *deadSlot = nullptr;
     for (auto &r : routes) {

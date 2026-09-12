@@ -173,7 +173,8 @@ private:
         uint8_t nextHop = 0;
         // Zero, a nie MESH_METRIC_INFINITY: niezerowa wartosc domyslna kazala
         // kompilatorowi trzymac w RAM (.data) wzorzec calej tablicy tras - 4 B na
-        // trase drugi raz. Nieskonczonosc ustawia konstruktor.
+        // trase drugi raz. Wolnego wpisu nikt nie czyta: findRoute odrzuca cel 0,
+        // a zajmowany slot dostaje MESH_METRIC_INFINITY jawnie.
         uint8_t metric = 0;
         uint8_t seq = 0;                // numer sekwencyjny celu (DSDV)
     };
