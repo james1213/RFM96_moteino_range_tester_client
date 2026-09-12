@@ -5,6 +5,7 @@ MeshRouter *MeshRouter::instance = nullptr;
 MeshRouter::MeshRouter(RadioManager *manager) {
     this->manager = manager;
     instance = this;
+    for (auto &r : routes) r.metric = MESH_METRIC_INFINITY;
 }
 
 void MeshRouter::onDataReceived(MeshDataCallback callback) {
@@ -224,7 +225,7 @@ bool MeshRouter::sendBeacon() {
     int8_t beaconPower = (seqToSend & 1) ? manager->getEffectiveTxPower()
                                          : manager->apcMaxDbm;
     // Beacon skladany wprost w buforze nadawczym radia - zero alokacji.
-    // Najwiekszy rozmiar: 4 + MESH_MAX_ROUTES * 3 = 22 B.
+    // Rozmiar: 4 + 3 B na trase + lista sasiadow; miesci sie w buforze - pilnuje #error w MeshRouter.h.
     uint8_t *beacon = manager->acquireTxBuffer();
     if (beacon == nullptr) return false;
     uint8_t n = 0;
@@ -242,7 +243,7 @@ bool MeshRouter::sendBeacon() {
     }
     beacon[countIndex] = count;
     // Lista wlasnych sasiadow: to z niej sasiedzi skladaja obraz sieci na dwa skoki.
-    // 2 bajty na wpis, czyli caly beacon to najwyzej 4 + 18 + 1 + 8 = 31 bajtow.
+    // 2 bajty na wpis (przy 20 trasach i 6 sasiadach caly beacon ma 77 bajtow).
     n += buildNeighborList(beacon + n);
     // Broadcast bez ACK, moc przemienna - patrz komentarz wyzej.
     bool queued = manager->commitTxBuffer(n, RADIO_BROADCAST_ID, RADIO_TYPE_MESH, false,
@@ -417,6 +418,13 @@ void MeshRouter::topologyWalkLoop() {
 }
 
 void MeshRouter::requestTopologyAll() {
+    // Obchod juz trwa: nie zaczynamy od zera. Przy kilkunastu wezlach obchod trwa
+    // dluzej niz odstep miedzy kolejnymi "MAP *" z PC i restart sprawial, ze dalsze
+    // wezly z tablicy tras nigdy nie zostalyby zapytane.
+    if (walkActive) {
+        Serial.println(F("MAP | obchod juz trwa"));
+        return;
+    }
     walkIndex = 0;
     walkActive = true;
     walkNextAtMillis = millis();

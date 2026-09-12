@@ -38,7 +38,8 @@
 // z odleglosci kilkudziesieciu cm odbiornik ulega saturacji: ramki gina wlasnie
 // dlatego, ze sygnal jest ZA MOCNY, a eskalacja APC "brak ACK -> pelna moc"
 // pogarsza sprawe (widziane na sprzecie jako spirala strat przy [P18-P20]).
-// W terenie: TX_POWER_DBM 20 i APC_CEILING_DBM 20.
+// W terenie wiecej mocy to wiekszy zasieg, ale w UE pasmo 433 MHz ma zwykle limit
+// 10 mW e.r.p. (~10 dBm) - przed ustawieniem 20 dBm sprawdz przepisy (ERC 70-03, UKE).
 #ifndef TX_POWER_DBM
 #define TX_POWER_DBM 2
 #endif
@@ -46,8 +47,18 @@
 // Sufit automatycznej eskalacji APC (skok przy stratach ACK i na czas transferu OTA).
 // UWAGA: przy zasilaniu z pinu 3V3 FTDI ustaw najwyzej TX_POWER_FTDI_SAFE_DBM (10) -
 // inaczej automat sam, bez udzialu TX_POWER_DBM, wpedzi plytke w petle brown-outow.
+// 9 dBm: BW 500 kHz ma o 7 dB gorsza czulosc niz 125 kHz. Co drugi beacon idzie
+// na suficie, a APC eskaluje do niego przy stratach, wiec te 7 dB zasiegu wraca.
+// Nadal ponizej TX_POWER_FTDI_SAFE_DBM i w granicach typowego limitu 10 mW e.r.p.
 #ifndef APC_CEILING_DBM
-#define APC_CEILING_DBM 2
+#define APC_CEILING_DBM 9
+#endif
+
+// Kadencja ruchu testowego. Przy 1 s trzy wezly zajmowaly ~46% kanalu (BW 125 kHz).
+// 10 s zostawia eter na beacony i trasy wieloskokowe: przy BW 500 kHz siec miesci
+// ~20 wezlow ponizej 30% zajetosci kanalu.
+#ifndef TEST_SEND_INTERVAL_MS
+#define TEST_SEND_INTERVAL_MS 10000UL
 #endif
 
 #if TX_POWER_DBM < TX_POWER_MIN_DBM || TX_POWER_DBM > TX_POWER_MAX_DBM
@@ -173,7 +184,7 @@ void setupRadio() {
 //        Serial.println(F("MAIN | data sent"));
     });
 
-    manager->setupRadio(433E6, 10, 7, 2, NODE_ID,
+    manager->setupRadio(RADIO_FREQUENCY_HZ, 10, 7, 2, NODE_ID,
                         [](int packetSize) {
                             manager->receiveDone(packetSize);
                         },
@@ -343,8 +354,8 @@ void loop() {
     // Ruch testowy: wstrzymany, gdy trwa transfer OTA (isOtaInProgress), a gdy radio
     // jest chwilowo zajete (send() zwraca false), wiadomosc jest po prostu pomijana -
     // send() NIE nadpisuje juz po cichu zakolejkowanej ramki.
-    if (!radioOta->isOtaInProgress() && runEvery(1000 + (micros() & 0xFF))) {
-        // Jitter 0-255 ms: oba wezly nadaja "co sekunde", wiec bez niego potrafia
+    if (!radioOta->isOtaInProgress() && runEvery(TEST_SEND_INTERVAL_MS + (micros() & 0xFF))) {
+        // Jitter 0-255 ms: wezly nadaja z ta sama kadencja, wiec bez niego potrafia
         // zsynchronizowac sie tak, ze ich ACK-i (wyzwalane odbiorem) leca rownoczesnie
         // i zderzaja sie w eterze co cykl - kwarce dryfuja zbyt wolno, by fazy same
         // sie rozeszly. Widziane na sprzecie: kazda wymiana konczyla sie timeoutem.

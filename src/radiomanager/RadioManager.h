@@ -88,13 +88,78 @@
 #endif
 #define TX_OCP_HIGH_POWER_MA    150 // limit pradu PA dla trybu >17 dBm (Semtech 5.4.3)
 
+// ==================== PARAMETRY RADIA (WSPOLNE DLA CALEJ SIECI) ====================
+// Czestotliwosc, SF, BW i CR musza byc IDENTYCZNE na wszystkich wezlach - wezel
+// z innym zestawem w ogole nie slyszy reszty. Osloniete #ifndef tylko po to, zeby
+// dalo sie je przetestowac z platformio.ini; zmieniaj je wtedy w obu projektach
+// naraz. Wartosci podawaj jako liczby calkowite (434000000L, nie 434E6), bo
+// sprawdzenia ponizej liczy preprocesor.
+//
+// SF7 / BW 500 kHz: ramka 4x krotsza niz przy 125 kHz (dane 52 B: 26 ms zamiast
+// 103 ms), czulosc -116 dBm zamiast -123 dBm - zasieg mniejszy o ~40%. Wymiana
+// na pojemnosc sieci: przy limicie 30% zajetosci kanalu ~20 wezlow zamiast ~6.
+#ifndef RADIO_FREQUENCY_HZ
+#define RADIO_FREQUENCY_HZ      434000000L // srodek pasma ISM 433,05-434,79 MHz
+#endif
+#ifndef RADIO_SPREADING_FACTOR
+#define RADIO_SPREADING_FACTOR  7
+#endif
+#ifndef RADIO_BANDWIDTH_HZ
+#define RADIO_BANDWIDTH_HZ      500000L
+#endif
+#ifndef RADIO_CODING_RATE_DENOM
+#define RADIO_CODING_RATE_DENOM 5          // CR 4/5
+#endif
+
+// SF6 dziala na SX1276 tylko z niejawnym naglowkiem (stala dlugosc ramki), a nasz
+// protokol rozpoznaje ramki po dlugosci z naglowka LoRa - dlatego od SF7.
+#if RADIO_SPREADING_FACTOR < 7 || RADIO_SPREADING_FACTOR > 12
+#error "RADIO_SPREADING_FACTOR poza zakresem 7..12"
+#endif
+#if RADIO_BANDWIDTH_HZ != 7800L && RADIO_BANDWIDTH_HZ != 10400L && RADIO_BANDWIDTH_HZ != 15600L \
+ && RADIO_BANDWIDTH_HZ != 20800L && RADIO_BANDWIDTH_HZ != 31250L && RADIO_BANDWIDTH_HZ != 41700L \
+ && RADIO_BANDWIDTH_HZ != 62500L && RADIO_BANDWIDTH_HZ != 125000L && RADIO_BANDWIDTH_HZ != 250000L \
+ && RADIO_BANDWIDTH_HZ != 500000L
+#error "RADIO_BANDWIDTH_HZ: dozwolone 7800..500000 wg SX1276 (np. 125000L, 250000L, 500000L)"
+#endif
+#if RADIO_CODING_RATE_DENOM < 5 || RADIO_CODING_RATE_DENOM > 8
+#error "RADIO_CODING_RATE_DENOM: 5..8 (CR 4/5..4/8)"
+#endif
+// Caly kanal (srodek +- polowa BW) ma lezec w pasmie. Dawne 433E6 z BW 125 kHz
+// wystawalo 12,5 kHz ponizej 433,05 MHz, a z BW 500 kHz wystawaloby o 300 kHz.
+#if !defined(RADIO_ALLOW_OUT_OF_BAND) && \
+    ((RADIO_FREQUENCY_HZ - RADIO_BANDWIDTH_HZ / 2) < 433050000L || \
+     (RADIO_FREQUENCY_HZ + RADIO_BANDWIDTH_HZ / 2) > 434790000L)
+#error "Kanal wychodzi poza pasmo ISM 433,05-434,79 MHz (swiadomie: -DRADIO_ALLOW_OUT_OF_BAND)"
+#endif
+
+// Przyblizony czas nadania NAJDLUZSZEJ ramki (120 B), zaokraglony w gore: ~200
+// symboli po 2^SF/BW. SF7/125: 204 ms (dokladnie 200), SF7/500: 51 ms (dokladnie
+// 50). Z niego wynikaja wszystkie czasy oczekiwania ponizej, wiec zmiana SF albo
+// BW nie wymaga recznego przestrajania timeoutow.
+#define RADIO_MAX_FRAME_MS ((200000UL << RADIO_SPREADING_FACTOR) / RADIO_BANDWIDTH_HZ)
+
+// Czas oczekiwania na ACK: nasza ramka + odlozenie odpowiedzi przez nasluch
+// kanalu + sama ramka ACK + obieg petli u odbiorcy. SF7/125: 1070 ms (bylo 1000),
+// SF7/500: 305 ms - przy 1000 ms ponowienia czekalyby 3 razy dluzej niz trzeba.
+#ifndef RADIO_ACK_TIMEOUT_MS
+#define RADIO_ACK_TIMEOUT_MS (5 * RADIO_MAX_FRAME_MS + 50)
+#endif
+// Straznik zawieszonego nadawania musi byc wyraznie dluzszy od najdluzszej ramki.
+// Stale 2000 ms falszywie zabijaloby nadawanie juz przy SF11/125 (ramka 2,5 s).
+#ifndef RADIO_TX_STUCK_TIMEOUT_MS
+#define RADIO_TX_STUCK_TIMEOUT_MS (3 * RADIO_MAX_FRAME_MS + 1500)
+#endif
+
 // Nasluch kanalu przed nadaniem (CSMA na RSSI chwilowym). Podloga szumu SX1276
 // przy SF7/125 kHz to ok. -110..-120 dBm; ramka sasiada z biurka to -20..-60 dBm.
 #ifndef CS_BUSY_RSSI_DBM
 #define CS_BUSY_RSSI_DBM  (-85)
 #endif
+// Dwie najdluzsze ramki: tyle trwa najgorszy przypadek zajetego kanalu, dalej to
+// juz szum albo obcy nadajnik. SF7/125: 408 ms (bylo 400), SF7/500: 102 ms.
 #ifndef CS_MAX_WAIT_MS
-#define CS_MAX_WAIT_MS    400
+#define CS_MAX_WAIT_MS    (2 * RADIO_MAX_FRAME_MS)
 #endif
 
 // Dioda aktywnosci: swieci stale, a przy kazdym nadaniu i kazdym odebranym
@@ -150,13 +215,13 @@ public:
     unsigned long sendingTime = 0;
     volatile unsigned long txDoneTime = 0;
     unsigned long txStartMillis = 0;
-    unsigned long txStuckTimeout = 2000; // ms; >> najdluzszy czas ramki w powietrzu
+    unsigned long txStuckTimeout = RADIO_TX_STUCK_TIMEOUT_MS; // ms; >> najdluzszy czas ramki w powietrzu
     volatile bool transmissionClenedUp = true;
     volatile bool ackReceived = false;
     bool waitingForAck = false;
     bool ackFramePendingTx = false; // ramka z zadaniem ACK zakolejkowana, ale jeszcze nie nadana
     unsigned long waitForAckStartTime = 0;
-    unsigned long ackTimeout = 1000; //ms
+    unsigned long ackTimeout = RADIO_ACK_TIMEOUT_MS; // ms, wyliczone z SF i BW
 
     // ==================== BUFORY ====================
     // Obie tablice sa STATYCZNE: zajmuja tyle samo miejsca co dawne Stringi na

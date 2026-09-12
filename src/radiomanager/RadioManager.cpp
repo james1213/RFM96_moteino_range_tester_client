@@ -20,6 +20,23 @@ void RadioManager::setupRadio(long frequency, int ss, int reset, int dio0, uint8
         Serial.println(F("[RADIO] LoRa.begin nie odpowiada - ponawiam za 500 ms"));
         delay(500);
     }
+    // Modulacja ustawiana jawnie, a nie brana z domyslnych biblioteki - wszystkie
+    // wezly musza miec identyczny zestaw. Tak jak enableCrc(), dopiero PO begin(),
+    // bo begin() resetuje modul. Biblioteka sama wlacza LowDataRateOptimize, gdy
+    // symbol przekracza 16 ms (SF11/SF12 przy 125 kHz).
+    LoRa.setSpreadingFactor(RADIO_SPREADING_FACTOR);
+    LoRa.setSignalBandwidth(RADIO_BANDWIDTH_HZ);
+    LoRa.setCodingRate4(RADIO_CODING_RATE_DENOM);
+    Serial.print(F("[RADIO] "));
+    Serial.print(frequency);
+    Serial.print(F(" Hz SF"));
+    Serial.print(RADIO_SPREADING_FACTOR);
+    Serial.print(F(" BW"));
+    Serial.print(RADIO_BANDWIDTH_HZ);
+    Serial.print(F(" CR4/"));
+    Serial.print(RADIO_CODING_RATE_DENOM);
+    Serial.print(F(" ackTimeout="));
+    Serial.println(RADIO_ACK_TIMEOUT_MS);
     // enableCrc() musi byc PO begin() - begin() resetuje modul i czysci ten bit
     LoRa.enableCrc();
     LoRa.onReceive(receiveDoneCallback);

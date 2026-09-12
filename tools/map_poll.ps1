@@ -42,7 +42,7 @@ param(
     [string[]]$Ports = @("COM5"),
     [int]$BaudRate = 115200,
     [string]$LogFile = (Join-Path $env:TEMP "moteino_mapa.log"),
-    [int]$IntervalSeconds = 15,
+    [int]$IntervalSeconds = 30,
     [string]$Command = "MAP *",
     [switch]$NoQuery
 )

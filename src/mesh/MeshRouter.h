@@ -37,23 +37,26 @@
 // ich podmienic z pliku projektu - zmienia sie je tutaj, dla calej sieci naraz.
 
 #ifndef MESH_BEACON_INTERVAL_MS
-#define MESH_BEACON_INTERVAL_MS   3000  // + jitter 0-511 ms, zeby beacony sie nie zderzaly
+#define MESH_BEACON_INTERVAL_MS   10000 // + jitter 0-511 ms, zeby beacony sie nie zderzaly;
+                                        // co 3 s przy ~20 wezlach zajmowaly wiecej eteru niz dane
 #endif
 #ifndef MESH_NEIGHBOR_TIMEOUT_MS
-#define MESH_NEIGHBOR_TIMEOUT_MS  12000 // prawdziwa CISZA (zadnych ramek) = sasiad znikl;
+#define MESH_NEIGHBOR_TIMEOUT_MS  40000 // prawdziwa CISZA (zadnych ramek) = sasiad znikl (4 beacony);
                                         // same zgubione beacony tras nie usmiercaja
 #endif
 #ifndef MESH_MAX_NEIGHBORS
-#define MESH_MAX_NEIGHBORS        4
+#define MESH_MAX_NEIGHBORS        6
 #endif
 #ifndef MESH_MAX_ROUTES
-#define MESH_MAX_ROUTES           6
+#define MESH_MAX_ROUTES           20 // = wezlow w sieci - 1; gorny limit pilnuje #error nizej
 #endif
 #ifndef MESH_DEDUP_SIZE
-#define MESH_DEDUP_SIZE           16 // musi pokryc horyzont retransmisji (~3 s watchdoga ACK)
+#define MESH_DEDUP_SIZE           32 // musi pokryc horyzont retransmisji; przy ~20 wezlach
+                                     // 16 wpisow obracalo sie w ulamku sekundy
 #endif
 
-#define MESH_MAX_TTL              4     // max skokow; dobija ramki, ktore ucieka dedupowi
+#define MESH_MAX_TTL              6     // max skokow; dobija ramki, ktore ucieka dedupowi.
+                                        // BW 500 kHz = mniejszy zasieg = dluzsze trasy
 #ifndef MESH_HOP_RETRIES
 #define MESH_HOP_RETRIES          2     // ponowienia jednego skoku (po ACK-timeoucie radia)
 #endif
@@ -86,7 +89,7 @@
 //   [liczba tras]     potem 3 B na trase:   [cel][nastepny skok][koszt]
 // Sekcja tras jest tym, co pozwala odczytac CALA trase z jednego wezla przy PC:
 // routing jest skok po skoku, wiec zeby przejsc droge do konca, trzeba znac
-// nastepny skok kazdego posrednika. Najwiekszy rozmiar to 1+8+1+18 = 28 bajtow.
+// nastepny skok kazdego posrednika. Rozmiar zalezy od tablic - pilnuje go #error nizej.
 #define MESH_MSG_TOPO_RESP    4
 #define MESH_ROUTE_ENTRY      3
 #define MESH_TOPO_REPORT_MAX  (1 + MESH_NEIGHBOR_ENTRY * MESH_MAX_NEIGHBORS \
@@ -94,7 +97,7 @@
 // Odstep miedzy kolejnymi pytaniami przy odpytywaniu wszystkich wezlow po kolei.
 // Jedno pytanie naraz, bo warstwa radiowa ma jeden slot transakcji.
 #ifndef MESH_WALK_GAP_MS
-#define MESH_WALK_GAP_MS      1500
+#define MESH_WALK_GAP_MS      1000 // 20 wezlow = ~20 s obchodu, ponizej starzenia krawedzi
 #endif
 #define MESH_BEACON_HEADER    4
 #define MESH_BEACON_ROUTE_LEN 3
@@ -113,10 +116,25 @@
 // krawedzi. Wezel przy PC jest wiec kolektorem: "MAP" zrzuca to, co wie, a
 // "MAP <id>" dopytuje wskazany wezel.
 #ifndef MESH_MAX_EDGES
-#define MESH_MAX_EDGES        10
+#define MESH_MAX_EDGES        20
 #endif
 #ifndef MESH_EDGE_TIMEOUT_MS
 #define MESH_EDGE_TIMEOUT_MS  60000 // krawedz nieodswiezona przez minute znika z mapy
+#endif
+
+// ==================== SPRAWDZENIA ROZMIAROW W CZASIE KOMPILACJI ====================
+// Beacon i raport topologii sa skladane wprost w buforze nadawczym, bez sprawdzania
+// dlugosci w locie. Za duze tablice (np. -DMESH_MAX_ROUTES=40) nadpisalyby pamiec
+// za buforem - lepiej, zeby kompilacja w ogole sie nie udala.
+#if (MESH_BEACON_HEADER + MESH_BEACON_ROUTE_LEN * MESH_MAX_ROUTES + 1 \
+     + MESH_NEIGHBOR_ENTRY * MESH_MAX_NEIGHBORS) > RADIO_PAYLOAD_CAPACITY
+#error "Beacon nie miesci sie w buforze nadawczym - zmniejsz MESH_MAX_ROUTES lub MESH_MAX_NEIGHBORS"
+#endif
+#if (MESH_DATA_HEADER + MESH_TOPO_REPORT_MAX) > RADIO_PAYLOAD_CAPACITY
+#error "Raport topologii nie miesci sie w ramce - zmniejsz MESH_MAX_ROUTES lub MESH_MAX_NEIGHBORS"
+#endif
+#if MESH_NEIGHBOR_TIMEOUT_MS < 3 * MESH_BEACON_INTERVAL_MS
+#error "MESH_NEIGHBOR_TIMEOUT_MS < 3 beacony: zywy sasiad znikalby po jednym zgubionym beaconie"
 #endif
 
 // Tresc dostarczona przez mesh: wskaznik w bufor odbiorczy radia (zakonczony
@@ -153,7 +171,10 @@ private:
     struct Route {
         uint8_t dest = 0;               // 0 = wolny wpis
         uint8_t nextHop = 0;
-        uint8_t metric = MESH_METRIC_INFINITY;
+        // Zero, a nie MESH_METRIC_INFINITY: niezerowa wartosc domyslna kazala
+        // kompilatorowi trzymac w RAM (.data) wzorzec calej tablicy tras - 4 B na
+        // trase drugi raz. Nieskonczonosc ustawia konstruktor.
+        uint8_t metric = 0;
         uint8_t seq = 0;                // numer sekwencyjny celu (DSDV)
     };
     // Krawedz grafu sieci, ktorej NIE jestesmy koncem - z listy sasiadow w cudzym
