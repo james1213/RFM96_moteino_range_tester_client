@@ -265,7 +265,7 @@ public:
     uint8_t senderIdOfLastMessage = 0;
     uint8_t receivedMessageIdOfLastMessage = 0;
     volatile int receivedPacketSize = 0;
-    int lastRssi = 0; // RSSI ostatnio odebranej ramki (dBm), lapany przy odczycie z FIFO
+    int lastRssi = 0; // RSSI ostatnio odebranej ramki (dBm, z poprawka na SNR < 0), lapany przy odczycie z FIFO
 
     // Stan APC. peerReportedRssi = ostatnie "slychac cie na X dBm" ze zwrotki w ACK.
     int peerReportedRssi = 0;

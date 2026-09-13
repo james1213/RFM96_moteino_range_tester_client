@@ -193,6 +193,16 @@ bool RadioManager::readReceivedFrame() {
     // nadpisuje dopiero kolejny odebrany pakiet. Kontekst petli glownej (nie ISR),
     // wiec dostep po SPI jest bezpieczny.
     lastRssi = LoRa.packetRssi();
+    // Ponizej szumu (SNR < 0) rejestr PktRssiValue pokazuje glownie szum, a nie
+    // sygnal - LoRa odbiera pakiety kilka dB ponizej szumu (SF7: do -7,5 dB).
+    // Nota SX1276, 5.5.5: moc pakietu = PacketRssi + SNR. Bez tej poprawki
+    // najslabsze lacza wygladaly nawet o kilka dB silniejsze, niz sa: mesh liczyl
+    // za niskie tlumienie (za tani koszt trasy przez lacze na granicy zasiegu),
+    // a ACK odsylal regulatorowi mocy zbyt optymistyczne RSSI.
+    // SNR prosto z rejestru, w calkowitych cwiartkach dB: LoRa.packetSnr() zwraca
+    // float, a sama arytmetyka zmiennoprzecinkowa kosztowala tu ~750 B flash.
+    int8_t snrQuarterDb = (int8_t) LoRa.peekRegister(0x19); // REG_PKT_SNR_VALUE, 0,25 dB/LSB
+    if (snrQuarterDb < 0) lastRssi += (snrQuarterDb - 2) / 4; // do najblizszego dB
     int size = receivedPacketSize;
     rxLength = 0;
     if (size < RADIO_HEADER_SIZE || size > RADIO_HEADER_SIZE + RADIO_PAYLOAD_CAPACITY) {
