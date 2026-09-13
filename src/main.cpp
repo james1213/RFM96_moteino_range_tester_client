@@ -91,9 +91,19 @@ void printResetCause() {
 
 SPIFlash flash(SS_FLASHMEM, 0xEF30); //EF30 for 4mbit  Windbond chip (W25X40CL)
 
-RadioManager *manager = new RadioManager();
-RadioOta *radioOta = new RadioOta(manager);
-MeshRouter *mesh = new MeshRouter(manager);
+// Obiekty statyczne zamiast new: program nie uzywa sterty, wiec linker nie
+// dolacza malloc/free (~1,1-1,3 KB flash). Pamiec zajmuja te same bajty co
+// wczesniej, tylko w .bss zamiast na stercie - dlatego "RAM used" z kompilacji
+// jest wyzszy, choc wolnego RAM nie ubywa. Wskazniki zostaja, zeby reszta kodu
+// (manager->, mesh->, radioOta->) sie nie zmienila. Kolejnosc definicji to
+// kolejnosc konstrukcji (jedna jednostka kompilacji), a konstruktory tylko
+// zapamietuja wskazniki - nie dotykaja sprzetu.
+static RadioManager managerInstance;
+static RadioOta radioOtaInstance(&managerInstance);
+static MeshRouter meshInstance(&managerInstance);
+RadioManager *manager = &managerInstance;
+RadioOta *radioOta = &radioOtaInstance;
+MeshRouter *mesh = &meshInstance;
 
 #ifndef OLED_I2C_ADDRESS
 #define OLED_I2C_ADDRESS 0x3C

@@ -4,6 +4,18 @@
 
 #include "RadioOta.h"
 
+// Liczba dziesietna bez znaku, np. numer pakietu albo CRC32. strtoul z libc
+// kosztowal ~500 B flash, bo obsluguje spacje, znak, inne podstawy i nasycenie
+// przy przepelnieniu - a protokol OTA przesyla wylacznie cyfry. *end wskazuje
+// pierwszy znak, ktory nie jest cyfra; brak cyfr = *end == s (jak w strtoul).
+// Wartosc powyzej 4294967295 zawija sie mod 2^32 - PC nigdy takiej nie wysyla.
+static unsigned long parseU32(const char *s, char **end) {
+    unsigned long v = 0;
+    while (*s >= '0' && *s <= '9') v = v * 10 + (unsigned long) (*s++ - '0');
+    if (end) *end = (char *) s;
+    return v;
+}
+
 
 #define DEBUG false
 
@@ -171,12 +183,9 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                 }
             } else if (inputLen > 8 && _input[0] == 'F' && _input[1] == 'L' && _input[2] == 'X' && _input[3] == '?' && _input[4] == 'E' && _input[5] == 'O' && _input[6] == 'F' && _input[7] == '?') {
                 if (otaState == OtaState(WAITING_FOR_HEX_DATA_FROM_SERIAL)) {
-                    // strtoul, a nie toInt(): CRC32 zajmuje pelne 32 bity bez znaku, a toInt()
-                    // opiera sie na atol(), ktorego avr-libc nie definiuje dla przepelnienia
-                    // ("result value is not predictable"). W praktyce atol zawija mod 2^32,
-                    // wiec rzutowanie na uint32_t dawalo dobra wartosc - ale strtoul jest
-                    // zdefiniowane dla calego zakresu, wiec nie polegamy na przypadku.
-                    finalCrc32 = strtoul(_input + 8, nullptr, 10); // bez String/substring - zero alokacji
+                    // parseU32, a nie atol(): CRC32 zajmuje pelne 32 bity bez znaku, a atol()
+                    // avr-libc nie definiuje dla przepelnienia ("result value is not predictable").
+                    finalCrc32 = parseU32(_input + 8, nullptr); // bez String/substring - zero alokacji
                     serialResendRequests = 0;
                     otaState = OtaState(SENDING_WIRELESS_EOF);
                 }
