@@ -131,6 +131,7 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
             boolean configChanged = false;
             char *colon = strchr(_input, ':');
 
+#if MESH_ENABLED
             if (strncmp_P(_input, PSTR("MAP"), 3) == 0) {
                 // "MAP" = zrzut tego, co ten wezel wie o sieci.
                 // "MAP <id>" = zapytanie wskazanego wezla o sasiadow i trasy.
@@ -141,7 +142,10 @@ if (otaState == OtaState(SENDING_WIRELESS_HANDSHAKE)) {
                 while (*arg == ' ') arg++;
                 uint8_t queryId = (*arg == '*') ? 255 : (uint8_t) atoi(arg);
                 if (mapCommandCallback) mapCommandCallback(queryId);
-            } else if (strstr(_input, "EEPROMRESET") == _input) {
+            } else
+#endif
+            // Bez mesh "MAP" nie jest komenda i trafia do UNKNOWN_CMD na koncu.
+            if (strstr(_input, "EEPROMRESET") == _input) {
                 resetEEPROM();
             } else if (strstr(_input, "SETTINGS?") == _input) {
                 printSettings();
@@ -246,9 +250,11 @@ RadioOta::RadioOta(RadioManager *manager) {
     this->manager = manager;
 }
 
+#if MESH_ENABLED
 void RadioOta::onMapCommand(void (*callback)(uint8_t queryId)) {
     mapCommandCallback = callback;
 }
+#endif
 
 // true = trwa transfer OTA; na ten czas wstrzymujemy ruch testowy z loop()
 bool RadioOta::isOtaInProgress() {

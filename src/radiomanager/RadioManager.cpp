@@ -53,6 +53,7 @@ void RadioManager::onOtaDataReceived(RadioTextCallback callback) {
     otaDataReceivedCallback = callback;
 }
 
+#if MESH_ENABLED
 void RadioManager::onMeshDataReceived(RadioBytesCallback callback) {
     meshDataReceivedCallback = callback;
 }
@@ -60,6 +61,7 @@ void RadioManager::onMeshDataReceived(RadioBytesCallback callback) {
 void RadioManager::onAnyFrameReceived(void (*callback)(uint8_t senderId)) {
     anyFrameReceivedCallback = callback;
 }
+#endif
 
 void RadioManager::onDataSent(void(*callback)()) {
     dataSentCallback = callback;
@@ -258,12 +260,14 @@ void RadioManager::receiveLoop() {
     activityBlink(); // kazdy uslyszany pakiet, takze cudzy - tester pokazuje, ze eter zyje
     if (!readReceivedFrame()) return;
 
+#if MESH_ENABLED
     // KAZDA poprawnie zaadresowana ramka (dane, ACK, beacon) jest dowodem, ze
     // lacze od nadawcy zyje - mesh odswieza tym swoich sasiadow, zeby zgubione
     // beacony (broadcast bez ACK, gina w kolizjach) nie usmiercaly zywych tras.
     if (anyFrameReceivedCallback) {
         anyFrameReceivedCallback(senderIdOfLastMessage);
     }
+#endif
 
     // Typ ramki zdjety z naglowka w readReceivedFrame - dalej decyduje o tym,
     // ktora warstwa dostanie tresc.
@@ -295,15 +299,18 @@ void RadioManager::receiveLoop() {
         sendAck();
     }
 
+    // Bez mesh (MESH_ENABLED 0) ramka MESH nie pasuje do zadnej galezi i jest pomijana.
     if (frameType == RADIO_TYPE_OTA) {
         DEBUGlogln(F("Received OTA message"));
         if (otaDataReceivedCallback) {
             otaDataReceivedCallback((char *) rxPayload, rxLength, senderIdOfLastMessage);
         }
+#if MESH_ENABLED
     } else if (frameType == RADIO_TYPE_MESH) {
         if (meshDataReceivedCallback) {
             meshDataReceivedCallback(rxPayload, rxLength, senderIdOfLastMessage);
         }
+#endif
     } else if (frameType == RADIO_TYPE_APP) {
         DEBUGlogln(F("Received DATA message"));
         if (dataReceivedCallback) {

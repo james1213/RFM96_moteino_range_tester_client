@@ -100,10 +100,14 @@ SPIFlash flash(SS_FLASHMEM, 0xEF30); //EF30 for 4mbit  Windbond chip (W25X40CL)
 // zapamietuja wskazniki - nie dotykaja sprzetu.
 static RadioManager managerInstance;
 static RadioOta radioOtaInstance(&managerInstance);
+#if MESH_ENABLED
 static MeshRouter meshInstance(&managerInstance);
+#endif
 RadioManager *manager = &managerInstance;
 RadioOta *radioOta = &radioOtaInstance;
+#if MESH_ENABLED
 MeshRouter *mesh = &meshInstance;
+#endif
 
 #ifndef OLED_I2C_ADDRESS
 #define OLED_I2C_ADDRESS 0x3C
@@ -166,6 +170,7 @@ void setupRadio() {
     manager->onOtaDataReceived([](char *str, uint8_t len, uint8_t senderId) {
         radioOta->radioOtaDataReceived(str, len, senderId);
     });
+#if MESH_ENABLED
     manager->onMeshDataReceived([](uint8_t *payload, uint8_t len, uint8_t senderId){
         mesh->radioMeshDataReceived(payload, len, senderId);
     });
@@ -175,7 +180,9 @@ void setupRadio() {
     // Dane dostarczone przez mesh laduja w tym samym handlerze co bezposrednie -
     // drugi parametr to wtedy WEZEL ZRODLOWY, nie nadawca ostatniego skoku.
     mesh->onDataReceived(dataReceived);
+#endif
 
+#if MESH_ENABLED
     // Kolektor mapy: "MAP" zrzuca obraz sieci, "MAP <id>" dopytuje odlegly wezel.
     radioOta->onMapCommand([](uint8_t queryId) {
         if (queryId == 0) {
@@ -189,6 +196,7 @@ void setupRadio() {
             Serial.println(F("MAP | zapytanie odrzucone - brak trasy albo radio zajete"));
         }
     });
+#endif
 
     manager->onDataSent([]() {
 //        Serial.println(F("MAIN | data sent"));
@@ -349,16 +357,20 @@ void loop() {
     // APC: na czas transferu OTA moc przypieta do sufitu, regulator zamrozony
     // (wykrywanie zbocza w srodku - wolanie co obieg jest tanie).
     manager->setApcFrozen(radioOta->isOtaInProgress());
+#if MESH_ENABLED
     // Mesh: na czas OTA bez beaconow i forwardingu (RAM i airtime dla transferu).
     mesh->setFrozen(radioOta->isOtaInProgress());
     mesh->loop();
+#endif
 
     // Czarna skrzynka: stan radia i mesh co 10 s - do diagnozy epizodow gluchoty.
     static unsigned long lastDiagMillis = 0;
     if (millis() - lastDiagMillis >= 10000) {
         lastDiagMillis = millis();
         manager->printRadioDiag();
+#if MESH_ENABLED
         mesh->printState();
+#endif
     }
 
     // Ruch testowy: wstrzymany, gdy trwa transfer OTA (isOtaInProgress), a gdy radio
@@ -389,9 +401,15 @@ void loop() {
         Serial.print(F("Sending payload: \""));
         Serial.print(payload);
         Serial.println(F("\""));
+#if MESH_ENABLED
         // Ruch testowy idzie przez mesh: trasa (takze wieloskokowa) wybierana
         // automatycznie z tablicy tras budowanej z beaconow.
         bool queued = mesh->send(actualDest, (const uint8_t *) payload, n,
+#else
+        // Bez mesh: jedna ramka APP wprost do adresata, z ACK - tylko jeden skok.
+        // Callbacki ponizej sa wspolne dla obu wariantow.
+        bool queued = manager->sendBytes((const uint8_t *) payload, n, actualDest, RADIO_TYPE_APP, true,
+#endif
                       []() {
                           Serial.println(F("MAIN | OK"));
                       },

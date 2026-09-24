@@ -25,6 +25,11 @@
 #include <Arduino.h>
 #include <radiomanager/RadioManager.h>
 
+// Cala warstwa mesh tylko przy MESH_ENABLED (RadioManager.h). Przy 0 klasy nie ma
+// wcale - kazde zapomniane uzycie konczy sie bledem kompilacji, a nie cichym
+// kodem, ktory nigdy nie ruszy.
+#if MESH_ENABLED
+
 // ============ CO MOZNA USTAWIC Z platformio.ini (build_flags) ============
 // Stale osloniete ponizej #ifndef to LOKALNA POLITYKA WEZLA: rozmiary tablic,
 // czasy, progi, moc. Wolno je nadpisac per projekt, np. -DMESH_MAX_NEIGHBORS=8,
@@ -258,5 +263,7 @@ private:
     void ageTables();
     bool isDuplicate(uint8_t origin, uint8_t flowId);
 };
+
+#endif // MESH_ENABLED
 
 #endif //RFM96_MESH_ROUTER_H

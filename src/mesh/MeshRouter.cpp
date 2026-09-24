@@ -1,5 +1,8 @@
 #include "MeshRouter.h"
 
+// Cala implementacja tylko przy MESH_ENABLED (RadioManager.h).
+#if MESH_ENABLED
+
 MeshRouter *MeshRouter::instance = nullptr;
 
 MeshRouter::MeshRouter(RadioManager *manager) {
@@ -796,3 +799,5 @@ void MeshRouter::printState() {
     Serial.print(F(" fwd=")); Serial.print(pendingForwardLen);
     Serial.print(F(" frozen=")); Serial.println(frozen);
 }
+
+#endif // MESH_ENABLED

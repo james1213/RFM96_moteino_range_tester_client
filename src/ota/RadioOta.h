@@ -163,7 +163,9 @@ private:
     // Byl tu String serialReceivedBuffer - kopia linii, ktora i tak lezy juz w _input.
     // Usunieta: ~106 B sterty w najciasniejszym momencie wysylki.
     long currentHexPacketNumber = -1; // numer pakietu z ostatniej ramki FLX?DAT? wyslanej w eter
+#if MESH_ENABLED
     void (*mapCommandCallback)(uint8_t queryId) = nullptr;
+#endif
 
     bool isResponseForCurrentHexPacket(const char *str, uint8_t prefixLength);
     void noteStaleHexResponse();
@@ -194,9 +196,11 @@ public:
     bool radioSendHandshake();
     bool radioSendEof();
     void radioOtaDataReceived(char *str, uint8_t len, uint8_t senderId);
+#if MESH_ENABLED
     // Komenda "MAP" z konsoli. Parser linii z PC siedzi w tej klasie (to ona czyta
     // serial), a mapa w MeshRouterze - stad zwykly hak zamiast zaleznosci miedzy nimi.
     void onMapCommand(void (*callback)(uint8_t queryId));
+#endif
 
     ///////////////////////////////////////////////
 

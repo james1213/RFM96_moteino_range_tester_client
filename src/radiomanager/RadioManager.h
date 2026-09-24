@@ -23,6 +23,21 @@
 // o innej wartosci przestaje rozumiec ramki sasiadow. Dlatego celowo nie da sie
 // ich podmienic z pliku projektu - zmienia sie je tutaj, dla calej sieci naraz.
 
+// ==================== MODULY KOMPILOWANE WARUNKOWO ====================
+// MESH_ENABLED 0 wycina z kompilacji cala warstwe mesh: MeshRouter, beacony,
+// tablice tras, mape sieci (komendy MAP) i haki mesh w RadioManager. Ruch testowy
+// idzie wtedy pojedyncza ramka APP wprost do adresata, z ACK - tylko jeden skok.
+// Zgodnosc w eterze: wezel z mesh rozumie ramki APP wezla bez mesh (ma na nie
+// osobny handler), ale odwrotnie nie - wiadomosci testowe wezla z mesh ida jako
+// ramki MESH, ktore wezel bez mesh pomija. Tras przez wezel bez mesh nie ma, bo
+// nie nadaje beaconow.
+#ifndef MESH_ENABLED
+#define MESH_ENABLED 1
+#endif
+#if MESH_ENABLED != 0 && MESH_ENABLED != 1
+#error "MESH_ENABLED: 0 albo 1"
+#endif
+
 #ifndef LOG_ACTIVE
 #define LOG_ACTIVE false
 #endif
@@ -251,8 +266,10 @@ public:
     void (*ackReceivedCallback)() = nullptr;
     RadioTextCallback dataReceivedCallback = nullptr;
     RadioTextCallback otaDataReceivedCallback = nullptr;
+#if MESH_ENABLED
     RadioBytesCallback meshDataReceivedCallback = nullptr;
     void (*anyFrameReceivedCallback)(uint8_t senderId) = nullptr; // kazda poprawna ramka (mesh: dowod zycia sasiada)
+#endif
     void (*dataSentCallback)() = nullptr;
 
     uint8_t messageId = 0;
@@ -338,8 +355,10 @@ public:
 
     void onDataReceived(RadioTextCallback callback);
     void onOtaDataReceived(RadioTextCallback callback);
+#if MESH_ENABLED
     void onMeshDataReceived(RadioBytesCallback callback);
     void onAnyFrameReceived(void (*callback)(uint8_t senderId));
+#endif
     void onDataSent(void (*callback)());
 
     virtual void receiveDone(int packetSize);
